@@ -1,0 +1,3150 @@
+<!DOCTYPE html>
+<html lang="en" class="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>DriveRead PDF — Browser PDF Reader, Converter &amp; Highlighter</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['JetBrains Mono', 'Fira Code', 'monospace']
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
+  <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+  <style>
+    /* Hide browser native vertical scrollbar completely so only the custom page slider appears */
+    * {
+      box-sizing: border-box;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    *::-webkit-scrollbar {
+      display: none;
+      width: 0 !important;
+      height: 0 !important;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      overflow-x: hidden;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* Horizontal scroll area for zoomed PDF pages so wider pages scroll sideways inside page area only */
+    #pdfPagesContainer {
+      width: 100%;
+      max-width: 100%;
+      overflow-x: auto;
+      overflow-y: visible;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* PDF Page Container & Text Selection Layer */
+    .pdf-page-wrapper {
+      position: relative;
+      margin: 0 auto 20px auto;
+      background: #ffffff;
+      box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08), 0 0 1px rgba(15, 23, 42, 0.15);
+      border-radius: 8px;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    html.dark .pdf-page-wrapper {
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45), 0 0 1px rgba(255, 255, 255, 0.12);
+    }
+
+    .pdf-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .highlight-layer {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    .highlight-rect {
+      position: absolute;
+      border-radius: 3px;
+      mix-blend-mode: multiply;
+      pointer-events: auto;
+      cursor: pointer;
+      transition: transform 0.1s ease, box-shadow 0.12s ease;
+    }
+    .highlight-rect:hover {
+      box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.65);
+      z-index: 5;
+    }
+
+    .text-layer {
+      position: absolute;
+      inset: 0;
+      z-index: 3;
+      user-select: text;
+      -webkit-user-select: text;
+      -webkit-touch-callout: none;
+      line-height: 1;
+      pointer-events: auto;
+    }
+
+    .text-layer span {
+      position: absolute;
+      white-space: pre;
+      color: transparent;
+      cursor: text;
+      transform-origin: 0% 0%;
+      border-radius: 2px;
+    }
+
+    .text-layer span::selection,
+    .text-layer mark::selection {
+      background: rgba(59, 130, 246, 0.28);
+      color: transparent;
+    }
+
+    /* Word-level search highlight (distinct bright orange vs highlighter palette) */
+    mark.search-word-match {
+      background-color: rgba(255, 145, 0, 0.52);
+      border-bottom: 2px solid #ff6d00;
+      color: transparent;
+      border-radius: 2px;
+      padding: 0;
+      margin: 0;
+    }
+    mark.search-word-active {
+      background-color: rgba(255, 61, 0, 0.82) !important;
+      outline: 2px solid #dd2c00 !important;
+      box-shadow: 0 0 0 2px rgba(221, 44, 0, 0.35);
+      color: transparent;
+      border-radius: 2px;
+    }
+
+    /* Print Styles */
+    #printContainer {
+      display: none;
+    }
+    @media print {
+      body > *:not(#printContainer) {
+        display: none !important;
+      }
+      #printContainer {
+        display: block !important;
+        width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #ffffff !important;
+        color: #000000 !important;
+      }
+      .print-page-img {
+        display: block;
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+        page-break-after: always;
+        break-after: page;
+        margin: 0 auto;
+      }
+      .print-page-img:last-child {
+        page-break-after: auto;
+        break-after: auto;
+      }
+    }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-100 font-sans antialiased min-h-screen transition-colors duration-150">
+
+  <!-- Slim Top Bar (scrolls naturally with the whole page — no fixed/frozen sections) -->
+  <header id="appHeader" class="w-full bg-white dark:bg-slate-900 border-b border-slate-200/80 dark:border-slate-800 px-2.5 sm:px-4 py-2 transition-colors">
+    <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
+      <!-- Brand + Active File Badge -->
+      <div class="flex items-center gap-2 min-w-0">
+        <button id="brandHomeBtn" type="button" class="flex items-center gap-2 text-left group focus:outline-none" title="Go to Files Library">
+          <div class="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center shadow-sm shrink-0 group-hover:bg-blue-700 transition">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>
+            </svg>
+          </div>
+          <div class="min-w-0">
+            <span class="font-semibold text-sm sm:text-base tracking-tight text-slate-900 dark:text-white block truncate">DriveRead</span>
+          </div>
+        </button>
+
+        <span id="activeDocBadge" class="hidden items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 max-w-[130px] sm:max-w-[240px] truncate"></span>
+      </div>
+
+      <!-- Right Global Controls -->
+      <div class="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+        <button id="navLibraryBtn" type="button" class="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition flex items-center gap-1.5" title="Back to Files Library">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+          </svg>
+          <span>Files</span>
+        </button>
+
+        <label for="fileInputGlobal" class="cursor-pointer px-2.5 py-1.5 rounded-lg text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white shadow-sm transition flex items-center gap-1.5">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+          </svg>
+          <span>Open File</span>
+        </label>
+        <input id="fileInputGlobal" type="file" multiple accept=".pdf,.txt,.md,.markdown,.html,.htm,.csv,.json,.rtf,.docx,.js,.ts,.jsx,.tsx,.py,.java,.c,.cpp,.h,.css,.sql,.sh,.xml,.yaml,.yml,.go,.rs,.rb,.php" class="hidden" />
+
+        <!-- Dark / Light Mode Toggle -->
+        <button id="themeToggleBtn" type="button" class="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition" aria-label="Toggle Dark or Light Theme" title="Toggle Dark/Light Mode">
+          <svg id="themeIconSun" class="w-4 h-4 hidden dark:block text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+          </svg>
+          <svg id="themeIconMoon" class="w-4 h-4 block dark:hidden text-slate-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Slim Reader Toolbar (Scrolls naturally with the page — no sticky/frozen positioning) -->
+  <section id="readerToolbar" class="hidden w-full bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-2 sm:px-4 py-1.5">
+    <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-1.5 sm:gap-2">
+
+      <!-- Page Jump & Zoom Controls -->
+      <div class="flex items-center flex-wrap gap-1 sm:gap-1.5">
+        <button id="prevPageBtn" type="button" class="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300" title="Previous Page">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+        </button>
+        <div class="flex items-center gap-1 text-xs">
+          <input id="pageJumpInput" type="number" min="1" value="1" aria-label="Page number" class="w-11 px-1.5 py-0.5 text-center rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500" />
+          <span class="text-slate-500 dark:text-slate-400">/ <span id="totalPagesLabel">1</span></span>
+        </div>
+        <button id="nextPageBtn" type="button" class="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300" title="Next Page">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+        </button>
+
+        <span class="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-0.5"></span>
+
+        <button id="zoomOutBtn" type="button" class="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300" title="Zoom Out">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M20 12H4"/></svg>
+        </button>
+        <span id="zoomLevelLabel" class="text-xs font-medium text-slate-700 dark:text-slate-300 min-w-[40px] text-center">100%</span>
+        <button id="zoomInBtn" type="button" class="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300" title="Zoom In">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+        </button>
+        <button id="fitWidthBtn" type="button" class="px-2 py-0.5 rounded text-xs font-medium bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition" title="Fit to width">
+          Fit Width
+        </button>
+      </div>
+
+      <!-- Default Highlighter Color Picker & Highlights List -->
+      <div class="flex items-center gap-1 sm:gap-1.5 bg-white dark:bg-slate-800 px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700">
+        <span class="text-[11px] font-medium text-slate-500 dark:text-slate-400 hidden md:inline">Color:</span>
+        <div id="colorPaletteContainer" class="flex items-center gap-1">
+          <button type="button" data-color="yellow" class="hl-swatch w-4 h-4 rounded-full bg-yellow-300 ring-2 ring-offset-1 ring-blue-600 dark:ring-offset-slate-800 transition" title="Yellow Highlight"></button>
+          <button type="button" data-color="green" class="hl-swatch w-4 h-4 rounded-full bg-green-300 hover:scale-110 transition" title="Green Highlight"></button>
+          <button type="button" data-color="blue" class="hl-swatch w-4 h-4 rounded-full bg-blue-300 hover:scale-110 transition" title="Blue Highlight"></button>
+          <button type="button" data-color="pink" class="hl-swatch w-4 h-4 rounded-full bg-pink-300 hover:scale-110 transition" title="Pink Highlight"></button>
+          <button type="button" data-color="orange" class="hl-swatch w-4 h-4 rounded-full bg-orange-300 hover:scale-110 transition" title="Orange Highlight"></button>
+          <button type="button" data-color="purple" class="hl-swatch w-4 h-4 rounded-full bg-purple-300 hover:scale-110 transition" title="Purple Highlight"></button>
+        </div>
+        <button id="viewHighlightsListBtn" type="button" class="px-1.5 py-0.5 rounded text-[11px] font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition" title="View all highlights in this document">
+          Highlights (<span id="hlCountBadge">0</span>)
+        </button>
+      </div>
+
+      <!-- In-Document Search & Export/Print Triggers -->
+      <div class="flex items-center flex-wrap gap-1 sm:gap-1.5">
+        <div class="flex items-center bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-1.5 py-0.5">
+          <svg class="w-3.5 h-3.5 text-slate-400 mr-1 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          <input id="docSearchInput" type="text" placeholder="Search word..." aria-label="Search in document" class="w-20 sm:w-28 bg-transparent text-xs text-slate-800 dark:text-slate-100 focus:outline-none" />
+          <span id="docSearchCount" class="text-[10px] font-medium text-slate-500 dark:text-slate-400 px-1 hidden whitespace-nowrap">0 of 0</span>
+          <button id="docSearchClearBtn" type="button" class="hidden p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 text-[10px]" title="Clear search">✕</button>
+          <button id="docSearchPrevBtn" type="button" class="px-1 py-0.5 text-[10px] text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white" title="Previous match (Shift+Enter)">▼</button>
+          <button id="docSearchNextBtn" type="button" class="px-1 py-0.5 text-[10px] text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white" title="Next match (Enter)">▲</button>
+        </div>
+
+        <button id="openExportModalBtn" type="button" class="px-2.5 py-1 rounded-lg text-xs font-medium bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition flex items-center gap-1">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+          <span>Export / Print</span>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Main Whole-Page Scrolling Container -->
+  <main id="mainContent" class="max-w-7xl mx-auto px-3 sm:px-6 py-5">
+
+    <!-- VIEW 1: LIBRARY & UPLOAD DROPZONE VIEW -->
+    <section id="libraryView" class="space-y-6">
+
+      <!-- Drag-and-Drop Upload Banner -->
+      <div id="dropZone" class="border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-2xl bg-white dark:bg-slate-900 p-5 sm:p-7 text-center transition hover:border-blue-500 dark:hover:border-blue-400">
+        <div class="max-w-xl mx-auto space-y-3">
+          <div class="w-12 h-12 rounded-2xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 flex items-center justify-center mx-auto">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+            </svg>
+          </div>
+          <div>
+            <h1 class="text-base sm:text-lg font-semibold text-slate-900 dark:text-white">Drop files here or click to open</h1>
+            <p class="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
+              Supports <strong>PDF</strong> plus <strong>TXT, MD, HTML, CSV, JSON, RTF, DOCX, and Code files</strong> (.js, .py, .ts, .css, .sql, etc.). Non-PDF files automatically convert into A4 PDFs in your browser.
+            </p>
+          </div>
+          <div class="flex flex-wrap items-center justify-center gap-2 pt-1">
+            <label for="fileInputDropzone" class="cursor-pointer px-4 py-2 rounded-xl text-xs sm:text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white shadow-sm transition inline-flex items-center gap-1.5">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+              <span>Add a File</span>
+            </label>
+            <input id="fileInputDropzone" type="file" multiple accept=".pdf,.txt,.md,.markdown,.html,.htm,.csv,.json,.rtf,.docx,.js,.ts,.jsx,.tsx,.py,.java,.c,.cpp,.h,.css,.sql,.sh,.xml,.yaml,.yml,.go,.rs,.rb,.php" class="hidden" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Library Header: Search + JSON Backup/Import + Grid/List Toggle -->
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 class="text-sm sm:text-base font-semibold text-slate-900 dark:text-white">Your Files Library</h2>
+          <p class="text-xs text-slate-500 dark:text-slate-400">Stored locally in your browser with saved page positions, zoom, and highlights</p>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+          <div class="relative flex-1 sm:w-56 min-w-[160px]">
+            <svg class="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            <input id="librarySearchInput" type="text" placeholder="Search files..." class="w-full pl-9 pr-3 py-1.5 rounded-xl text-xs sm:text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+
+          <!-- JSON Backup Export & Import -->
+          <button id="exportBackupBtn" type="button" class="px-2.5 py-1.5 rounded-xl text-xs font-medium border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition inline-flex items-center gap-1" title="Export JSON backup of files metadata and highlights">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+            <span>Backup JSON</span>
+          </button>
+
+          <label for="importBackupInput" class="cursor-pointer px-2.5 py-1.5 rounded-xl text-xs font-medium border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition inline-flex items-center gap-1" title="Import JSON backup of files metadata and highlights">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+            <span>Import JSON</span>
+          </label>
+          <input id="importBackupInput" type="file" accept=".json,application/json" class="hidden" />
+
+          <div class="inline-flex rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-0.5 shrink-0">
+            <button id="gridViewBtn" type="button" class="p-1.5 rounded-lg bg-blue-50 dark:bg-blue-950/70 text-blue-600 dark:text-blue-400" title="Grid View" aria-label="Grid View">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
+            </button>
+            <button id="listViewBtn" type="button" class="p-1.5 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white" title="List View" aria-label="List View">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Library Grid / List Container -->
+      <div id="libraryItemsContainer" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+
+      <!-- Empty Library State ("Add a file" message) -->
+      <div id="libraryEmptyState" class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-8 text-center space-y-3">
+        <p class="text-sm font-semibold text-slate-800 dark:text-slate-200">Add a file to get started</p>
+        <p class="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">Your library is empty. Upload or drag-and-drop any PDF, TXT, Markdown, HTML, CSV, JSON, RTF, DOCX, or code file above.</p>
+        <div>
+          <label for="fileInputDropzone" class="cursor-pointer inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white transition">
+            <span>Add a file</span>
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 2: READER VIEW -->
+    <section id="readerView" class="hidden space-y-4">
+      <!-- Info bar at top of document -->
+      <div class="flex flex-wrap items-center justify-between gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2 text-xs">
+        <div class="flex items-center gap-2 min-w-0">
+          <span id="readerDocTitle" class="font-semibold text-slate-900 dark:text-white truncate">Document.pdf</span>
+          <span id="readerDocMeta" class="text-slate-500 dark:text-slate-400 shrink-0"></span>
+        </div>
+        <div class="flex items-center gap-2 text-slate-500 dark:text-slate-400">
+          <span>Select text to open floating highlight bar • Tap any highlight to edit or remove</span>
+        </div>
+      </div>
+
+      <!-- Floating Selection Toolbar (Appears right above selected text with 6 color dots + Highlight + Copy) -->
+      <div id="selectionToolbar" class="hidden fixed z-50 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl rounded-xl px-2.5 py-1.5 flex items-center gap-1.5 select-none">
+        <div id="selectionColorDots" class="flex items-center gap-1">
+          <button type="button" data-sel-color="yellow" class="w-4 h-4 rounded-full bg-yellow-300 hover:scale-110 transition ring-1 ring-black/10" title="Highlight Yellow"></button>
+          <button type="button" data-sel-color="green" class="w-4 h-4 rounded-full bg-green-300 hover:scale-110 transition ring-1 ring-black/10" title="Highlight Green"></button>
+          <button type="button" data-sel-color="blue" class="w-4 h-4 rounded-full bg-blue-300 hover:scale-110 transition ring-1 ring-black/10" title="Highlight Blue"></button>
+          <button type="button" data-sel-color="pink" class="w-4 h-4 rounded-full bg-pink-300 hover:scale-110 transition ring-1 ring-black/10" title="Highlight Pink"></button>
+          <button type="button" data-sel-color="orange" class="w-4 h-4 rounded-full bg-orange-300 hover:scale-110 transition ring-1 ring-black/10" title="Highlight Orange"></button>
+          <button type="button" data-sel-color="purple" class="w-4 h-4 rounded-full bg-purple-300 hover:scale-110 transition ring-1 ring-black/10" title="Highlight Purple"></button>
+        </div>
+        <span class="h-4 w-px bg-slate-200 dark:bg-slate-700 mx-0.5"></span>
+        <button id="selectionHighlightBtn" type="button" class="px-2 py-0.5 rounded-md text-xs font-medium bg-amber-100 hover:bg-amber-200 text-amber-900 dark:bg-amber-900/50 dark:text-amber-100 transition">
+          Highlight
+        </button>
+        <button id="selectionCopyBtn" type="button" class="px-2 py-0.5 rounded-md text-xs font-medium bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition">
+          Copy
+        </button>
+      </div>
+
+      <!-- Floating Highlight Edit Popover (When clicking an existing highlight) -->
+      <div id="highlightPopover" class="hidden fixed z-50 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl rounded-xl p-2 flex items-center gap-1.5">
+        <span class="text-[11px] font-medium text-slate-500 dark:text-slate-400 px-1">Color:</span>
+        <button type="button" data-edit-color="yellow" class="w-4 h-4 rounded-full bg-yellow-300 hover:scale-110 transition" title="Change to Yellow"></button>
+        <button type="button" data-edit-color="green" class="w-4 h-4 rounded-full bg-green-300 hover:scale-110 transition" title="Change to Green"></button>
+        <button type="button" data-edit-color="blue" class="w-4 h-4 rounded-full bg-blue-300 hover:scale-110 transition" title="Change to Blue"></button>
+        <button type="button" data-edit-color="pink" class="w-4 h-4 rounded-full bg-pink-300 hover:scale-110 transition" title="Change to Pink"></button>
+        <button type="button" data-edit-color="orange" class="w-4 h-4 rounded-full bg-orange-300 hover:scale-110 transition" title="Change to Orange"></button>
+        <button type="button" data-edit-color="purple" class="w-4 h-4 rounded-full bg-purple-300 hover:scale-110 transition" title="Change to Purple"></button>
+        <span class="h-4 w-px bg-slate-200 dark:bg-slate-700 mx-0.5"></span>
+        <button id="deleteHighlightBtn" type="button" class="px-2 py-0.5 rounded text-xs font-medium bg-red-50 hover:bg-red-100 dark:bg-red-950/60 dark:hover:bg-red-900/60 text-red-600 dark:text-red-300 transition">
+          Remove
+        </button>
+        <button id="closePopoverBtn" type="button" class="p-0.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200" title="Close">✕</button>
+      </div>
+
+      <!-- Right-Side Overlaid Page Slider (Scrubber) flush at far right edge (2-3px from edge) -->
+      <div id="pageScrubber" class="fixed top-16 bottom-4 z-40 flex items-center pointer-events-none select-none" style="right: 2px;" aria-label="Page scrubber">
+        <div id="pageScrubberHitArea" class="relative w-3.5 h-full flex justify-end pr-[1px] pointer-events-none opacity-0 transition-opacity duration-200 cursor-pointer" style="touch-action: none;">
+          <!-- Thin light grey vertical track -->
+          <div id="pageScrubberTrack" class="w-1 h-full rounded-full bg-slate-300/80 dark:bg-slate-700/80 relative">
+            <!-- Small light grey thumb (no icon, no arrows) -->
+            <div id="pageScrubberThumb" class="w-1.5 h-7 -left-[1px] rounded-full bg-slate-400/95 dark:bg-slate-500/95 shadow-2xs absolute top-0"></div>
+          </div>
+          <!-- Small "page X / total" bubble shown while dragging -->
+          <div id="pageScrubberBubble" class="hidden absolute right-5 px-2 py-0.5 rounded-md text-[11px] font-medium bg-slate-800/90 text-white dark:bg-slate-100/95 dark:text-slate-900 shadow-md whitespace-nowrap pointer-events-none -translate-y-1/2" style="top: 0px;">
+            page 1 / 1
+          </div>
+        </div>
+      </div>
+
+      <!-- Continuous Whole-Page PDF Pages Container -->
+      <div id="pdfPagesContainer" class="w-full py-2 select-text"></div>
+    </section>
+
+  </main>
+
+  <!-- MODAL 1: EXPORT & PRINT (3 MODES + MULTI-PATH EXPORT) -->
+  <div id="exportModal" class="hidden fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+    <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-3xl w-full p-4 sm:p-6 shadow-2xl space-y-4 my-auto max-h-[92vh] overflow-y-auto">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <h3 class="text-base sm:text-lg font-semibold text-slate-900 dark:text-white">Export &amp; Print Document</h3>
+          <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Both Download PDF and Print use the selected mode below.</p>
+        </div>
+        <button id="closeExportModalBtn" type="button" class="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">✕</button>
+      </div>
+
+      <!-- 3 Export Modes -->
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+        <label class="cursor-pointer rounded-xl border p-3 transition flex flex-col justify-between border-blue-600 bg-blue-50/50 dark:bg-blue-950/30 dark:border-blue-500" id="modeCardWithHighlights">
+          <div class="flex items-center justify-between gap-1">
+            <span class="text-xs font-semibold text-slate-900 dark:text-white">1. With highlight colors</span>
+            <input type="radio" name="exportMode" value="with-highlights" checked class="accent-blue-600" />
+          </div>
+          <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5">Outputs the entire pages with highlight colors drawn on them.</p>
+        </label>
+
+        <label class="cursor-pointer rounded-xl border border-slate-200 dark:border-slate-800 p-3 transition flex flex-col justify-between hover:border-slate-300 dark:hover:border-slate-700" id="modeCardPlain">
+          <div class="flex items-center justify-between gap-1">
+            <span class="text-xs font-semibold text-slate-900 dark:text-white">2. Without colors (plain)</span>
+            <input type="radio" name="exportMode" value="without-highlights" class="accent-blue-600" />
+          </div>
+          <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5">Outputs ONLY extracted highlighted text in black on white A4 pages, in page order.</p>
+        </label>
+
+        <label class="cursor-pointer rounded-xl border border-slate-200 dark:border-slate-800 p-3 transition flex flex-col justify-between hover:border-slate-300 dark:hover:border-slate-700" id="modeCardHighlightsOnly">
+          <div class="flex items-center justify-between gap-1">
+            <span class="text-xs font-semibold text-slate-900 dark:text-white">3. Highlighted parts only</span>
+            <input type="radio" name="exportMode" value="highlights-only" class="accent-blue-600" />
+          </div>
+          <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5">Outputs ONLY extracted highlighted text on A4 pages with each snippet's highlight color behind the text.</p>
+        </label>
+      </div>
+
+      <!-- Empty Highlights Warning Message (shown instead of generating an empty file) -->
+      <div id="exportEmptyHighlightsNotice" class="hidden rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 p-4 text-center space-y-1">
+        <p class="text-xs sm:text-sm font-semibold text-amber-900 dark:text-amber-200">No highlights in this document yet</p>
+        <p class="text-xs text-amber-800 dark:text-amber-300">Select some text on any page to highlight it first, or switch to "With highlight colors" to export the full pages.</p>
+      </div>
+
+      <!-- Action Buttons (Shielded Download + Print) -->
+      <div id="exportActionsRow" class="flex flex-wrap items-center gap-2 pt-1">
+        <a id="shieldedDownloadLink" data-native-download="true" href="data:application/pdf;base64," download="document.pdf" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white shadow-sm transition inline-flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+          <span>Download PDF</span>
+        </a>
+
+        <button id="triggerPrintBtn" type="button" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition inline-flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>
+          <span>Print / Save as PDF</span>
+        </button>
+
+        <span id="exportStatusText" class="text-xs text-slate-500 dark:text-slate-400 ml-auto">Ready</span>
+      </div>
+
+      <!-- Inline Built-in Export Preview (Canvas Thumbnails + Embedded Viewer) -->
+      <div id="exportPreviewContainer" class="border border-slate-200 dark:border-slate-800 rounded-xl p-3 bg-slate-50 dark:bg-slate-950 space-y-2">
+        <div class="flex items-center justify-between text-xs">
+          <span class="font-medium text-slate-700 dark:text-slate-300">Live Export Preview (<span id="exportPreviewPageCount">0</span> pages)</span>
+          <span class="text-[11px] text-slate-500">Scroll preview below to verify before downloading or printing</span>
+        </div>
+        <div id="exportCanvasPreviewList" class="flex gap-3 overflow-x-auto py-2 min-h-[160px] items-center"></div>
+        <iframe id="exportIframeViewer" title="Output Viewer" class="w-full h-56 rounded-lg border border-slate-200 dark:border-slate-800 bg-white"></iframe>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 2: HIGHLIGHTS LIST / DIGEST MODAL -->
+  <div id="highlightsModal" class="hidden fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
+    <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-lg w-full p-4 sm:p-5 shadow-2xl space-y-3 max-h-[85vh] flex flex-col">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-semibold text-slate-900 dark:text-white">Document Highlights</h3>
+        <button id="closeHighlightsModalBtn" type="button" class="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200">✕</button>
+      </div>
+      <div id="highlightsListContainer" class="flex-1 overflow-y-auto space-y-2 pr-1"></div>
+      <div class="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-800">
+        <button id="clearAllHighlightsBtn" type="button" class="text-xs font-medium text-red-600 hover:underline">Clear All Highlights</button>
+        <button id="doneHighlightsModalBtn" type="button" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 3: RENAME OR DELETE CONFIRMATION MODAL -->
+  <div id="dialogModal" class="hidden fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+    <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-sm w-full p-5 shadow-2xl space-y-4">
+      <h3 id="dialogTitle" class="text-base font-semibold text-slate-900 dark:text-white">Rename File</h3>
+      <p id="dialogMessage" class="text-xs text-slate-500 dark:text-slate-400 hidden"></p>
+      <input id="dialogInput" type="text" class="w-full px-3 py-2 rounded-xl text-sm border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      <div class="flex items-center justify-end gap-2">
+        <button id="dialogCancelBtn" type="button" class="px-3.5 py-1.5 rounded-xl text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">Cancel</button>
+        <button id="dialogConfirmBtn" type="button" class="px-3.5 py-1.5 rounded-xl text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST NOTIFICATION -->
+  <div id="toastBanner" class="hidden fixed bottom-4 right-4 z-50 bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 px-4 py-2.5 rounded-xl shadow-lg text-xs font-medium max-w-xs transition-all"></div>
+
+  <!-- DEDICATED PRINT CONTAINER FOR NATIVE PRINT / SAVE AS PDF -->
+  <div id="printContainer"></div>
+
+  <script>
+    // =========================================================================
+    // 0. SHIELDED DIRECT DOWNLOAD CLICK LISTENER (CAPTURE PHASE FOR CANVAS)
+    // =========================================================================
+    window.addEventListener('click', function(e) {
+      const link = e.target && e.target.closest ? e.target.closest('a[data-native-download="true"]') : null;
+      if (!link) return;
+      const href = link.getAttribute('href') || '';
+      if (!href || href === '#' || href === 'data:application/pdf;base64,' || link.getAttribute('data-disabled') === 'true') {
+        e.preventDefault();
+        return;
+      }
+      e.stopImmediatePropagation();
+      if (e.defaultPrevented) {
+        const detached = document.createElement('a');
+        detached.href = href;
+        detached.download = link.getAttribute('download') || 'export.pdf';
+        detached.click();
+      }
+    }, true);
+
+    // Configure PDF.js worker
+    if (window.pdfjsLib) {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+
+    // =========================================================================
+    // 1. CONSTANTS, A4 DIMENSIONS & COLOR DEFINITIONS
+    // =========================================================================
+    const A4_WIDTH = 595.28;
+    const A4_HEIGHT = 841.89;
+    // Standard 96 DPI / 72 pt ratio so 100% zoom (1.0) renders a standard PDF at true 1:1 physical screen scale (~794px for A4)
+    const BASE_CSS_SCALE = 96 / 72;
+    const MIN_ZOOM = 0.25; // 25%
+    const MAX_ZOOM = 4.00; // 400%
+    const ZOOM_STEPS = [0.25, 0.33, 0.50, 0.67, 0.75, 0.90, 1.00, 1.10, 1.25, 1.50, 1.75, 2.00, 2.50, 3.00, 4.00];
+
+    const HIGHLIGHT_COLORS = {
+      yellow: { name: 'Yellow', css: 'rgba(253, 224, 71, 0.55)', rgb: [0.99, 0.90, 0.35], badge: 'bg-yellow-200 text-yellow-900' },
+      green:  { name: 'Green',  css: 'rgba(134, 239, 172, 0.55)', rgb: [0.58, 0.95, 0.70], badge: 'bg-green-200 text-green-900' },
+      blue:   { name: 'Blue',   css: 'rgba(147, 197, 253, 0.55)', rgb: [0.62, 0.80, 0.99], badge: 'bg-blue-200 text-blue-900' },
+      pink:   { name: 'Pink',   css: 'rgba(249, 168, 212, 0.55)', rgb: [0.98, 0.70, 0.85], badge: 'bg-pink-200 text-pink-900' },
+      orange: { name: 'Orange', css: 'rgba(253, 186, 116, 0.55)', rgb: [0.99, 0.76, 0.48], badge: 'bg-orange-200 text-orange-900' },
+      purple: { name: 'Purple', css: 'rgba(216, 180, 254, 0.55)', rgb: [0.86, 0.74, 0.99], badge: 'bg-purple-200 text-purple-900' }
+    };
+
+    const state = {
+      view: 'library',        // 'library' | 'reader'
+      libraryLayout: 'grid',  // 'grid' | 'list'
+      searchQuery: '',
+      files: [],              // Array of file records
+      activeFileId: null,
+      pdfDoc: null,           // PDF.js document instance
+      zoom: 1.0,
+      fitWidth: true,
+      currentPage: 1,
+      totalPages: 1,
+      activeColor: 'yellow',
+      selectedHighlightId: null,
+      pendingSelection: null, // Cached { pageNum, text, rects, clientRect } for floating selection bar
+      docSearchMatches: [],   // Array of <mark class="search-word-match"> elements
+      docSearchIndex: -1,
+      exportBlobUrl: null,
+      exportJobId: 0,
+      printBlobUrl: null,
+      printIframe: null,
+      scrubberDragging: false,
+      scrubberHideTimer: null,
+      isRenderingZoom: false,
+      renderJobId: 0
+    };
+
+    // =========================================================================
+    // 2. STORAGE ENGINE (INDEXEDDB + LOCALSTORAGE SESSION & BACKUP)
+    // =========================================================================
+    const DB_NAME = 'DriveReadPDFDatabase_v1';
+    const STORE_NAME = 'documents';
+    const SESSION_KEY = 'driveread_session_v1';
+    let dbPromise = null;
+
+    function openDatabase() {
+      if (dbPromise) return dbPromise;
+      dbPromise = new Promise((resolve) => {
+        try {
+          if (!window.indexedDB) {
+            resolve(null);
+            return;
+          }
+          const req = window.indexedDB.open(DB_NAME, 1);
+          req.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+              db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+            }
+          };
+          req.onsuccess = (e) => resolve(e.target.result);
+          req.onerror = () => resolve(null);
+        } catch (err) {
+          resolve(null);
+        }
+      });
+      return dbPromise;
+    }
+
+    function saveSessionState(extra = {}) {
+      try {
+        const current = getSessionState();
+        const next = {
+          lastOpenedFileId: state.activeFileId !== undefined ? state.activeFileId : current.lastOpenedFileId,
+          lastPage: state.currentPage || current.lastPage || 1,
+          zoom: state.zoom || current.zoom || 1.0,
+          fitWidth: typeof state.fitWidth === 'boolean' ? state.fitWidth : (current.fitWidth !== false),
+          ...extra
+        };
+        localStorage.setItem(SESSION_KEY, JSON.stringify(next));
+      } catch (e) {}
+    }
+
+    function getSessionState() {
+      try {
+        const raw = localStorage.getItem(SESSION_KEY);
+        return raw ? JSON.parse(raw) : {};
+      } catch (e) {
+        return {};
+      }
+    }
+
+    async function saveFileRecord(record) {
+      const idx = state.files.findIndex(f => f.id === record.id);
+      if (idx >= 0) {
+        state.files[idx] = record;
+      } else {
+        state.files.unshift(record);
+      }
+      const db = await openDatabase();
+      if (db) {
+        await new Promise((resolve) => {
+          try {
+            const tx = db.transaction(STORE_NAME, 'readwrite');
+            tx.objectStore(STORE_NAME).put(record);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+          } catch (e) {
+            resolve();
+          }
+        });
+      }
+      try {
+        const meta = state.files.map(f => ({
+          id: f.id,
+          name: f.name,
+          originalFormat: f.originalFormat,
+          size: f.size,
+          pageCount: f.pageCount,
+          lastPage: f.lastPage || 1,
+          zoom: f.zoom || 1.0,
+          fitWidth: f.fitWidth !== false,
+          updatedAt: f.updatedAt,
+          highlights: f.highlights || []
+        }));
+        localStorage.setItem('driveread_meta_v1', JSON.stringify(meta));
+      } catch (e) {}
+    }
+
+    async function deleteFileRecord(id) {
+      state.files = state.files.filter(f => f.id !== id);
+      const sess = getSessionState();
+      if (sess.lastOpenedFileId === id) {
+        saveSessionState({ lastOpenedFileId: null });
+      }
+      const db = await openDatabase();
+      if (db) {
+        await new Promise((resolve) => {
+          try {
+            const tx = db.transaction(STORE_NAME, 'readwrite');
+            tx.objectStore(STORE_NAME).delete(id);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+          } catch (e) {
+            resolve();
+          }
+        });
+      }
+    }
+
+    async function loadAllFileRecords() {
+      const db = await openDatabase();
+      if (db) {
+        const items = await new Promise((resolve) => {
+          try {
+            const tx = db.transaction(STORE_NAME, 'readonly');
+            const req = tx.objectStore(STORE_NAME).getAll();
+            req.onsuccess = () => resolve(req.result || []);
+            req.onerror = () => resolve([]);
+          } catch (e) {
+            resolve([]);
+          }
+        });
+        if (items && items.length > 0) {
+          items.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+          state.files = items;
+          return;
+        }
+      }
+    }
+
+    // =========================================================================
+    // 3. JSON BACKUP EXPORT & IMPORT (HIGHLIGHTS + FILES METADATA & BINARIES)
+    // =========================================================================
+    function uint8ToBase64(bytes) {
+      if (!bytes || !bytes.length) return '';
+      let binary = '';
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+      }
+      return btoa(binary);
+    }
+
+    function base64ToUint8(b64) {
+      if (!b64) return null;
+      const bin = atob(b64);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) {
+        out[i] = bin.charCodeAt(i);
+      }
+      return out;
+    }
+
+    function exportLibraryBackupJson() {
+      if (state.files.length === 0) {
+        showToast('Library is empty — add a file before exporting a backup.');
+        return;
+      }
+      const payload = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        session: getSessionState(),
+        files: state.files.map(f => ({
+          id: f.id,
+          name: f.name,
+          originalFormat: f.originalFormat || 'PDF',
+          size: f.size || 0,
+          pageCount: f.pageCount || 1,
+          lastPage: f.lastPage || 1,
+          zoom: f.zoom || 1.0,
+          fitWidth: f.fitWidth !== false,
+          updatedAt: f.updatedAt || Date.now(),
+          highlights: f.highlights || [],
+          pdfBase64: f.pdfBytes ? uint8ToBase64(f.pdfBytes) : undefined
+        }))
+      };
+      const jsonStr = JSON.stringify(payload, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const detached = document.createElement('a');
+      detached.href = url;
+      detached.download = `driveread-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      detached.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      showToast(`Exported JSON backup (${state.files.length} file${state.files.length === 1 ? '' : 's'})`);
+    }
+
+    async function importLibraryBackupJson(file) {
+      try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        if (!data || !Array.isArray(data.files)) {
+          showToast('Invalid backup JSON format.');
+          return;
+        }
+        let restoredCount = 0;
+        for (const item of data.files) {
+          const existing = state.files.find(f => f.id === item.id || f.name === item.name);
+          if (existing) {
+            existing.highlights = Array.isArray(item.highlights) ? item.highlights : existing.highlights;
+            existing.lastPage = item.lastPage || existing.lastPage || 1;
+            existing.zoom = item.zoom || existing.zoom || 1.0;
+            existing.fitWidth = typeof item.fitWidth === 'boolean' ? item.fitWidth : existing.fitWidth;
+            existing.updatedAt = item.updatedAt || Date.now();
+            if (!existing.pdfBytes && item.pdfBase64) {
+              existing.pdfBytes = base64ToUint8(item.pdfBase64);
+            }
+            await saveFileRecord(existing);
+            restoredCount++;
+          } else if (item.pdfBase64) {
+            const pdfBytes = base64ToUint8(item.pdfBase64);
+            const rec = {
+              id: item.id || ('doc_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7)),
+              name: item.name || 'Restored.pdf',
+              originalFormat: item.originalFormat || 'PDF',
+              size: item.size || pdfBytes.byteLength,
+              pageCount: item.pageCount || 1,
+              lastPage: item.lastPage || 1,
+              zoom: item.zoom || 1.0,
+              fitWidth: item.fitWidth !== false,
+              updatedAt: item.updatedAt || Date.now(),
+              highlights: Array.isArray(item.highlights) ? item.highlights : [],
+              pdfBytes
+            };
+            await saveFileRecord(rec);
+            restoredCount++;
+          }
+        }
+        renderLibrary();
+        showToast(`Imported backup (${restoredCount} file record${restoredCount === 1 ? '' : 's'} updated)`);
+      } catch (err) {
+        showToast('Failed to parse backup JSON file.');
+      }
+    }
+
+    // =========================================================================
+    // 4. FILE CONVERSION ENGINE (TEXT/MD/HTML/CSV/JSON/RTF/DOCX/CODE -> A4 PDF)
+    // =========================================================================
+    function sanitizeWinAnsi(str) {
+      return String(str || '')
+        .replace(/[\u202F\u00A0]/g, ' ')
+        .replace(/[\u2018\u2019]/g, "'")
+        .replace(/[\u201C\u201D]/g, '"')
+        .replace(/[\u2013\u2014]/g, '-')
+        .replace(/\t/g, '    ')
+        .replace(/[^\x20-\x7E]/g, '');
+    }
+
+    function detectFormatExt(filename) {
+      const parts = String(filename || '').toLowerCase().split('.');
+      return parts.length > 1 ? parts.pop() : 'txt';
+    }
+
+    function parseRtfToText(rtf) {
+      let text = rtf.replace(/\\par[d]?/gi, '\n')
+                    .replace(/\\line/gi, '\n')
+                    .replace(/\\tab/gi, '    ')
+                    .replace(/\\'([0-9a-fA-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+                    .replace(/\{\\fonttbl.*?\}|\{\\colortbl.*?\}|\{\\stylesheet.*?\}|\{\\\*\\.*?\}/gs, '')
+                    .replace(/\\[a-zA-Z]+-?\d*\s?/g, '')
+                    .replace(/[{}]/g, '');
+      return text.trim();
+    }
+
+    function parseHtmlToBlocks(htmlString) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(htmlString, 'text/html');
+      const blocks = [];
+      function walk(node) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const val = node.textContent.replace(/\s+/g, ' ').trim();
+          if (val) blocks.push({ type: 'p', text: val });
+          return;
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) return;
+        const tag = node.tagName.toLowerCase();
+        if (['script', 'style', 'noscript'].includes(tag)) return;
+        if (tag === 'h1') {
+          blocks.push({ type: 'h1', text: node.textContent.trim() });
+        } else if (tag === 'h2') {
+          blocks.push({ type: 'h2', text: node.textContent.trim() });
+        } else if (tag === 'h3' || tag === 'h4') {
+          blocks.push({ type: 'h3', text: node.textContent.trim() });
+        } else if (tag === 'pre' || tag === 'code') {
+          blocks.push({ type: 'code', text: node.textContent });
+        } else if (tag === 'li') {
+          blocks.push({ type: 'li', text: '* ' + node.textContent.trim() });
+        } else if (['p', 'div', 'section', 'article', 'blockquote', 'tr'].includes(tag)) {
+          const childrenHasBlock = Array.from(node.children).some(c =>
+            ['H1','H2','H3','H4','P','DIV','PRE','UL','OL','LI','TABLE','TR'].includes(c.tagName)
+          );
+          if (!childrenHasBlock) {
+            const val = node.textContent.replace(/\s+/g, ' ').trim();
+            if (val) blocks.push({ type: 'p', text: val });
+          } else {
+            Array.from(node.childNodes).forEach(walk);
+          }
+        } else {
+          Array.from(node.childNodes).forEach(walk);
+        }
+      }
+      walk(doc.body || doc.documentElement);
+      return blocks.length ? blocks : [{ type: 'p', text: doc.body ? doc.body.textContent : htmlString }];
+    }
+
+    function parseCsvToBlocks(csvText, title) {
+      const lines = csvText.split(/\r?\n/).filter(l => l.trim().length > 0);
+      const blocks = [{ type: 'h1', text: title + ' (CSV Data Table)' }];
+      lines.forEach((line, idx) => {
+        const cols = line.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+        const formatted = cols.map(c => c.padEnd(16, ' ').slice(0, 22)).join(' | ');
+        if (idx === 0) {
+          blocks.push({ type: 'h3', text: formatted });
+          blocks.push({ type: 'code', text: '-'.repeat(Math.min(80, formatted.length)) });
+        } else {
+          blocks.push({ type: 'code', text: formatted });
+        }
+      });
+      return blocks;
+    }
+
+    function parseMarkdownOrTextToBlocks(rawText, ext, filename) {
+      const codeExts = ['js','ts','jsx','tsx','py','java','c','cpp','h','css','sql','sh','xml','yaml','yml','go','rs','rb','php','json'];
+      if (ext === 'json') {
+        try {
+          const pretty = JSON.stringify(JSON.parse(rawText), null, 2);
+          return [
+            { type: 'h1', text: filename },
+            ...pretty.split(/\r?\n/).map(line => ({ type: 'code', text: line }))
+          ];
+        } catch (e) {}
+      }
+      if (codeExts.includes(ext)) {
+        return [
+          { type: 'h1', text: filename + ' (' + ext.toUpperCase() + ' Source)' },
+          ...rawText.split(/\r?\n/).map((line, i) => ({
+            type: 'code',
+            text: String(i + 1).padStart(3, ' ') + ' | ' + line
+          }))
+        ];
+      }
+
+      const lines = rawText.split(/\r?\n/);
+      const blocks = [];
+      let inCodeBlock = false;
+
+      for (const rawLine of lines) {
+        const line = rawLine.replace(/\s+$/, '');
+        if (line.trim().startsWith('```')) {
+          inCodeBlock = !inCodeBlock;
+          continue;
+        }
+        if (inCodeBlock) {
+          blocks.push({ type: 'code', text: line });
+          continue;
+        }
+        if (!line.trim()) {
+          blocks.push({ type: 'spacer', text: '' });
+          continue;
+        }
+        if (/^#\s+/.test(line)) {
+          blocks.push({ type: 'h1', text: line.replace(/^#\s+/, '') });
+        } else if (/^##\s+/.test(line)) {
+          blocks.push({ type: 'h2', text: line.replace(/^##\s+/, '') });
+        } else if (/^###+\s+/.test(line)) {
+          blocks.push({ type: 'h3', text: line.replace(/^###+\s+/, '') });
+        } else if (/^(\*|-|\+|\d+\.)\s+/.test(line.trim())) {
+          blocks.push({ type: 'li', text: '  * ' + line.trim().replace(/^(\*|-|\+)\s+/, '') });
+        } else if (/^---+$/.test(line.trim())) {
+          blocks.push({ type: 'hr', text: '' });
+        } else {
+          const cleaned = line.replace(/\*\*(.*?)\*\*/g, '$1').replace(/__(.*?)__/g, '$1');
+          blocks.push({ type: 'p', text: cleaned });
+        }
+      }
+      return blocks;
+    }
+
+    function wrapLine(text, font, fontSize, maxWidth) {
+      const clean = sanitizeWinAnsi(text);
+      if (!clean) return [''];
+      const words = clean.split(' ');
+      const lines = [];
+      let current = '';
+
+      for (const word of words) {
+        const candidate = current ? current + ' ' + word : word;
+        const width = font.widthOfTextAtSize(candidate, fontSize);
+        if (width <= maxWidth) {
+          current = candidate;
+        } else {
+          if (current) lines.push(current);
+          if (font.widthOfTextAtSize(word, fontSize) > maxWidth) {
+            let chunk = '';
+            for (const ch of word) {
+              if (font.widthOfTextAtSize(chunk + ch, fontSize) <= maxWidth) {
+                chunk += ch;
+              } else {
+                lines.push(chunk);
+                chunk = ch;
+              }
+            }
+            current = chunk;
+          } else {
+            current = word;
+          }
+        }
+      }
+      if (current) lines.push(current);
+      return lines.length ? lines : [''];
+    }
+
+    async function convertBlocksToPdfBytes(blocks, docTitle) {
+      const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
+      const pdfDoc = await PDFDocument.create();
+      const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+      const fontMono = await pdfDoc.embedFont(StandardFonts.Courier);
+
+      // A4 Page Dimensions (595.28 x 841.89 pt)
+      const pageWidth = A4_WIDTH;
+      const pageHeight = A4_HEIGHT;
+      const marginX = 50;
+      const marginTop = 54;
+      const marginBottom = 52;
+      const maxWidth = pageWidth - marginX * 2;
+
+      let page = pdfDoc.addPage([pageWidth, pageHeight]);
+      let cursorY = pageHeight - marginTop;
+
+      function ensureSpace(neededHeight) {
+        if (cursorY - neededHeight < marginBottom) {
+          page = pdfDoc.addPage([pageWidth, pageHeight]);
+          cursorY = pageHeight - marginTop;
+        }
+      }
+
+      for (const block of blocks) {
+        if (block.type === 'spacer') {
+          cursorY -= 8;
+          continue;
+        }
+        if (block.type === 'hr') {
+          ensureSpace(16);
+          page.drawLine({
+            start: { x: marginX, y: cursorY - 6 },
+            end: { x: pageWidth - marginX, y: cursorY - 6 },
+            thickness: 0.75,
+            color: rgb(0.8, 0.82, 0.86)
+          });
+          cursorY -= 16;
+          continue;
+        }
+
+        let font = fontRegular;
+        let size = 11;
+        let lineHeight = 16;
+        let color = rgb(0.12, 0.16, 0.23);
+        let extraTop = 0;
+        let extraBottom = 4;
+
+        if (block.type === 'h1') {
+          font = fontBold;
+          size = 18;
+          lineHeight = 24;
+          color = rgb(0.06, 0.09, 0.16);
+          extraTop = 8;
+          extraBottom = 8;
+        } else if (block.type === 'h2') {
+          font = fontBold;
+          size = 14.5;
+          lineHeight = 20;
+          color = rgb(0.1, 0.2, 0.42);
+          extraTop = 6;
+          extraBottom = 5;
+        } else if (block.type === 'h3') {
+          font = fontBold;
+          size = 12.5;
+          lineHeight = 18;
+          color = rgb(0.15, 0.23, 0.35);
+          extraTop = 4;
+          extraBottom = 4;
+        } else if (block.type === 'code') {
+          font = fontMono;
+          size = 9.5;
+          lineHeight = 13.5;
+          color = rgb(0.15, 0.18, 0.25);
+          extraTop = 0;
+          extraBottom = 1;
+        } else if (block.type === 'li') {
+          font = fontRegular;
+          size = 11;
+          lineHeight = 15.5;
+          extraBottom = 3;
+        }
+
+        cursorY -= extraTop;
+        const wrappedLines = wrapLine(block.text, font, size, maxWidth);
+        for (const lineStr of wrappedLines) {
+          ensureSpace(lineHeight);
+          if (block.type === 'code') {
+            page.drawRectangle({
+              x: marginX - 4,
+              y: cursorY - lineHeight + 3,
+              width: maxWidth + 8,
+              height: lineHeight,
+              color: rgb(0.95, 0.96, 0.98)
+            });
+          }
+          page.drawText(lineStr, {
+            x: marginX,
+            y: cursorY - size,
+            size,
+            font,
+            color
+          });
+          cursorY -= lineHeight;
+        }
+        cursorY -= extraBottom;
+      }
+
+      const pages = pdfDoc.getPages();
+      pages.forEach((p, idx) => {
+        const footer = sanitizeWinAnsi(`${docTitle}  |  Page ${idx + 1} of ${pages.length}`);
+        p.drawText(footer, {
+          x: marginX,
+          y: 26,
+          size: 8.5,
+          font: fontRegular,
+          color: rgb(0.5, 0.54, 0.6)
+        });
+      });
+
+      const saved = await pdfDoc.save();
+      return new Uint8Array(saved);
+    }
+
+    async function ingestExternalFile(file) {
+      const ext = detectFormatExt(file.name);
+      const rawBuffer = await file.arrayBuffer();
+      let pdfBytes = null;
+      let originalFormat = ext.toUpperCase();
+
+      if (ext === 'pdf') {
+        pdfBytes = new Uint8Array(rawBuffer);
+      } else if (ext === 'docx') {
+        let extractedHtml = '';
+        if (window.mammoth) {
+          try {
+            const res = await window.mammoth.convertToHtml({ arrayBuffer: rawBuffer.slice(0) });
+            extractedHtml = res.value || '';
+          } catch (e) {}
+        }
+        const blocks = extractedHtml
+          ? parseHtmlToBlocks(extractedHtml)
+          : [{ type: 'h1', text: file.name }, { type: 'p', text: 'DOCX file converted in browser.' }];
+        pdfBytes = await convertBlocksToPdfBytes(blocks, file.name);
+        originalFormat = 'DOCX → PDF';
+      } else {
+        const textContent = new TextDecoder('utf-8').decode(rawBuffer);
+        let blocks = [];
+        if (ext === 'html' || ext === 'htm') {
+          blocks = parseHtmlToBlocks(textContent);
+          originalFormat = 'HTML → PDF';
+        } else if (ext === 'csv') {
+          blocks = parseCsvToBlocks(textContent, file.name);
+          originalFormat = 'CSV → PDF';
+        } else if (ext === 'rtf') {
+          const stripped = parseRtfToText(textContent);
+          blocks = parseMarkdownOrTextToBlocks(stripped, 'txt', file.name);
+          originalFormat = 'RTF → PDF';
+        } else {
+          blocks = parseMarkdownOrTextToBlocks(textContent, ext, file.name);
+          originalFormat = `${ext.toUpperCase()} → PDF`;
+        }
+        pdfBytes = await convertBlocksToPdfBytes(blocks, file.name);
+      }
+
+      const loadedPdf = await window.PDFLib.PDFDocument.load(pdfBytes.slice());
+      const pageCount = loadedPdf.getPageCount();
+
+      const record = {
+        id: 'doc_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+        name: file.name.replace(/\.[^.]+$/, '') + (ext === 'pdf' ? '.pdf' : ` (${ext.toUpperCase()}).pdf`),
+        originalFormat,
+        size: pdfBytes.byteLength,
+        pageCount,
+        lastPage: 1,
+        zoom: 1.0,
+        fitWidth: true,
+        updatedAt: Date.now(),
+        highlights: [],
+        pdfBytes
+      };
+
+      await saveFileRecord(record);
+      return record;
+    }
+
+    // =========================================================================
+    // 5. LIBRARY VIEW RENDERING & ACTIONS (RENAME, DELETE, SEARCH)
+    // =========================================================================
+    function formatBytes(bytes) {
+      if (!bytes || bytes < 1024) return (bytes || 0) + ' B';
+      if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / 1048576).toFixed(2) + ' MB';
+    }
+
+    function renderLibrary() {
+      const container = document.getElementById('libraryItemsContainer');
+      const emptyState = document.getElementById('libraryEmptyState');
+      const q = state.searchQuery.trim().toLowerCase();
+
+      const filtered = state.files.filter(f =>
+        f.name.toLowerCase().includes(q) ||
+        (f.originalFormat || '').toLowerCase().includes(q)
+      );
+
+      if (state.libraryLayout === 'grid') {
+        container.className = 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4';
+      } else {
+        container.className = 'flex flex-col gap-2.5';
+      }
+
+      if (filtered.length === 0) {
+        container.innerHTML = '';
+        emptyState.classList.remove('hidden');
+        return;
+      }
+      emptyState.classList.add('hidden');
+
+      container.innerHTML = filtered.map(file => {
+        const hlCount = (file.highlights || []).length;
+        const dateStr = new Date(file.updatedAt || Date.now()).toLocaleDateString(undefined, {
+          month: 'short', day: 'numeric'
+        });
+
+        if (state.libraryLayout === 'list') {
+          return `
+            <div class="group bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 hover:border-blue-500 dark:hover:border-blue-500 transition shadow-2xs">
+              <div class="flex items-center gap-3 min-w-0 flex-1 cursor-pointer" data-action="open" data-id="${file.id}">
+                <div class="w-9 h-9 rounded-lg bg-blue-50 dark:bg-blue-950/70 text-blue-600 dark:text-blue-400 flex items-center justify-center font-semibold text-xs shrink-0">
+                  PDF
+                </div>
+                <div class="min-w-0 flex-1">
+                  <p class="text-sm font-semibold text-slate-900 dark:text-white truncate">${escapeHtml(file.name)}</p>
+                  <div class="flex flex-wrap items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                    <span class="px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 font-medium">${escapeHtml(file.originalFormat || 'PDF')}</span>
+                    <span>${file.pageCount || 1} pages</span>
+                    <span>• Last at p.${file.lastPage || 1}</span>
+                    <span>• ${hlCount} highlight${hlCount === 1 ? '' : 's'}</span>
+                  </div>
+                </div>
+              </div>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <button type="button" data-action="open" data-id="${file.id}" class="px-2.5 py-1 rounded-lg text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white">Open</button>
+                <button type="button" data-action="rename" data-id="${file.id}" class="px-2 py-1 rounded-lg text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300">Rename</button>
+                <button type="button" data-action="delete" data-id="${file.id}" class="px-2 py-1 rounded-lg text-xs font-medium bg-red-50 dark:bg-red-950/50 hover:bg-red-100 text-red-600 dark:text-red-400">Delete</button>
+              </div>
+            </div>
+          `;
+        }
+
+        return `
+          <div class="group bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 flex flex-col justify-between gap-3 hover:border-blue-500 dark:hover:border-blue-500 transition shadow-2xs">
+            <div class="cursor-pointer space-y-2.5" data-action="open" data-id="${file.id}">
+              <div class="flex items-start justify-between gap-2">
+                <span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-blue-50 dark:bg-blue-950/80 text-blue-600 dark:text-blue-400">
+                  ${escapeHtml(file.originalFormat || 'PDF')}
+                </span>
+                <span class="text-[11px] text-slate-400">${dateStr} • ${formatBytes(file.size)}</span>
+              </div>
+              <h3 class="text-sm font-semibold text-slate-900 dark:text-white break-words line-clamp-2 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition">
+                ${escapeHtml(file.name)}
+              </h3>
+              <div class="flex flex-wrap items-center gap-1.5 pt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                <span class="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800">${file.pageCount || 1} page${(file.pageCount || 1) > 1 ? 's' : ''}</span>
+                <span class="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800">Resume p.${file.lastPage || 1}</span>
+                <span class="px-2 py-0.5 rounded-md ${hlCount > 0 ? 'bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 font-medium' : 'bg-slate-100 dark:bg-slate-800'}">
+                  ${hlCount} highlight${hlCount === 1 ? '' : 's'}
+                </span>
+              </div>
+            </div>
+
+            <div class="flex items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800/80">
+              <button type="button" data-action="open" data-id="${file.id}" class="flex-1 py-1.5 rounded-xl text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white transition text-center">
+                Open Reader
+              </button>
+              <button type="button" data-action="rename" data-id="${file.id}" class="px-2.5 py-1.5 rounded-xl text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition">
+                Rename
+              </button>
+              <button type="button" data-action="delete" data-id="${file.id}" class="px-2.5 py-1.5 rounded-xl text-xs font-medium bg-red-50 dark:bg-red-950/50 hover:bg-red-100 text-red-600 dark:text-red-400 transition">
+                Delete
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function escapeHtml(str) {
+      return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    // =========================================================================
+    // 6. PDF READER ENGINE (SMOOTH SCROLL, ZOOM, FIT-WIDTH, SEARCH, LAST PAGE)
+    // =========================================================================
+    let pageObserver = null;
+
+    async function openDocumentInReader(fileId) {
+      const file = state.files.find(f => f.id === fileId);
+      if (!file || !file.pdfBytes) {
+        showToast('Could not load document binary.');
+        return;
+      }
+
+      state.activeFileId = file.id;
+      state.view = 'reader';
+      state.zoom = file.zoom || 1.0;
+      state.fitWidth = typeof file.fitWidth === 'boolean' ? file.fitWidth : true;
+      file.updatedAt = Date.now();
+      await saveFileRecord(file);
+      saveSessionState({
+        lastOpenedFileId: file.id,
+        lastPage: file.lastPage || 1,
+        zoom: state.zoom,
+        fitWidth: state.fitWidth
+      });
+
+      // Toggle UI sections
+      document.getElementById('libraryView').classList.add('hidden');
+      document.getElementById('readerView').classList.remove('hidden');
+      document.getElementById('readerToolbar').classList.remove('hidden');
+
+      const badge = document.getElementById('activeDocBadge');
+      badge.textContent = file.name;
+      badge.classList.remove('hidden');
+      badge.classList.add('inline-flex');
+
+      document.getElementById('readerDocTitle').textContent = file.name;
+      document.getElementById('readerDocMeta').textContent = `(${file.originalFormat || 'PDF'} • ${formatBytes(file.size)})`;
+
+      // Load via PDF.js using cloned Uint8Array
+      const clonedBytes = file.pdfBytes.slice();
+      const loadingTask = window.pdfjsLib.getDocument({ data: clonedBytes });
+      state.pdfDoc = await loadingTask.promise;
+      state.totalPages = state.pdfDoc.numPages;
+      document.getElementById('totalPagesLabel').textContent = String(state.totalPages);
+      document.getElementById('pageJumpInput').max = String(state.totalPages);
+
+      updateHighlightCountBadge();
+      await renderAllPdfPages();
+
+      // Restore last remembered page
+      const resumePage = Math.min(Math.max(1, file.lastPage || 1), state.totalPages);
+      state.currentPage = resumePage;
+      document.getElementById('pageJumpInput').value = String(resumePage);
+      if (resumePage > 1) {
+        setTimeout(() => {
+          jumpToPage(resumePage, true);
+          showToast(`Resumed at Page ${resumePage}`);
+        }, 100);
+      } else {
+        window.scrollTo({ top: 0, behavior: 'auto' });
+      }
+    }
+
+    function getAvailableReaderWidth() {
+      const container = document.getElementById('pdfPagesContainer');
+      const rawWidth = (container && container.clientWidth > 0)
+        ? container.clientWidth
+        : Math.min(window.innerWidth - 24, 1232);
+      return Math.max(260, rawWidth - 8);
+    }
+
+    function computeFitWidthZoom(basePagePtWidth) {
+      const availWidth = getAvailableReaderWidth();
+      const baseCssWidth = basePagePtWidth * BASE_CSS_SCALE;
+      const fitZoom = availWidth / Math.max(1, baseCssWidth);
+      return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, +fitZoom.toFixed(4)));
+    }
+
+    function updateZoomControlsUI() {
+      const pct = Math.round(state.zoom * 100);
+      const label = document.getElementById('zoomLevelLabel');
+      if (label) label.textContent = `${pct}%`;
+
+      const outBtn = document.getElementById('zoomOutBtn');
+      const inBtn = document.getElementById('zoomInBtn');
+      const fitBtn = document.getElementById('fitWidthBtn');
+      if (outBtn) {
+        outBtn.disabled = state.zoom <= MIN_ZOOM + 0.005;
+        outBtn.classList.toggle('opacity-40', outBtn.disabled);
+      }
+      if (inBtn) {
+        inBtn.disabled = state.zoom >= MAX_ZOOM - 0.005;
+        inBtn.classList.toggle('opacity-40', inBtn.disabled);
+      }
+      if (fitBtn) {
+        if (state.fitWidth) {
+          fitBtn.className = 'px-2 py-0.5 rounded text-xs font-medium bg-blue-600 text-white border border-blue-600 transition';
+        } else {
+          fitBtn.className = 'px-2 py-0.5 rounded text-xs font-medium bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition';
+        }
+      }
+    }
+
+    function captureReadingAnchor() {
+      const container = document.getElementById('pdfPagesContainer');
+      const pageNum = state.currentPage || 1;
+      const pageEl = document.querySelector(`.pdf-page-wrapper[data-page-number="${pageNum}"]`);
+      let withinPageRatio = 0;
+      if (pageEl) {
+        const rect = pageEl.getBoundingClientRect();
+        if (rect.height > 0) {
+          // Measure how far down the current page the top of the viewport is
+          withinPageRatio = Math.max(-0.2, Math.min(0.98, -rect.top / rect.height));
+        }
+      }
+      let horizCenterRatio = 0.5;
+      if (container && container.scrollWidth > container.clientWidth) {
+        horizCenterRatio = (container.scrollLeft + container.clientWidth / 2) / container.scrollWidth;
+      }
+      return { pageNum, withinPageRatio, horizCenterRatio };
+    }
+
+    function restoreReadingAnchor(anchor) {
+      if (!anchor) return;
+      const container = document.getElementById('pdfPagesContainer');
+      const targetPage = Math.min(Math.max(1, anchor.pageNum || 1), state.totalPages);
+      const pageEl = document.querySelector(`.pdf-page-wrapper[data-page-number="${targetPage}"]`);
+      if (pageEl) {
+        const rect = pageEl.getBoundingClientRect();
+        const pageDocTop = window.scrollY + rect.top;
+        const targetScrollY = Math.max(0, pageDocTop + (anchor.withinPageRatio || 0) * rect.height);
+        window.scrollTo({ top: targetScrollY, behavior: 'auto' });
+      }
+      if (container && container.scrollWidth > container.clientWidth) {
+        const targetLeft = (anchor.horizCenterRatio || 0.5) * container.scrollWidth - (container.clientWidth / 2);
+        container.scrollLeft = Math.max(0, targetLeft);
+      } else if (container) {
+        container.scrollLeft = 0;
+      }
+      state.currentPage = targetPage;
+      document.getElementById('pageJumpInput').value = String(targetPage);
+      updateScrubberFromScroll();
+    }
+
+    async function applyZoomWithAnchor(newZoom, fitWidthMode = false) {
+      if (!state.pdfDoc) return;
+      const anchor = captureReadingAnchor();
+      state.fitWidth = fitWidthMode;
+      if (!fitWidthMode) {
+        state.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, +newZoom.toFixed(4)));
+      }
+      persistZoomState();
+      await renderAllPdfPages(anchor);
+    }
+
+    function getNextZoomStep(direction) {
+      const current = state.zoom;
+      const epsilon = 0.015;
+      if (direction > 0) {
+        for (const step of ZOOM_STEPS) {
+          if (step > current + epsilon) return step;
+        }
+        return MAX_ZOOM;
+      } else {
+        for (let i = ZOOM_STEPS.length - 1; i >= 0; i--) {
+          if (ZOOM_STEPS[i] < current - epsilon) return ZOOM_STEPS[i];
+        }
+        return MIN_ZOOM;
+      }
+    }
+
+    async function renderAllPdfPages(readingAnchor = null) {
+      if (!state.pdfDoc) return;
+      const jobId = ++state.renderJobId;
+      state.isRenderingZoom = true;
+      const container = document.getElementById('pdfPagesContainer');
+      const prevHeight = container.offsetHeight;
+      if (prevHeight > 100) {
+        container.style.minHeight = `${prevHeight}px`;
+      }
+      container.innerHTML = '';
+      hideSelectionToolbar();
+
+      if (pageObserver) pageObserver.disconnect();
+      pageObserver = new IntersectionObserver((entries) => {
+        if (state.isRenderingZoom) return;
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            const pNum = parseInt(entry.target.getAttribute('data-page-number'), 10);
+            if (pNum && pNum !== state.currentPage) {
+              state.currentPage = pNum;
+              document.getElementById('pageJumpInput').value = String(pNum);
+              const activeFile = getActiveFile();
+              if (activeFile) {
+                activeFile.lastPage = pNum;
+                saveFileRecord(activeFile);
+              }
+              saveSessionState({ lastPage: pNum });
+              updateScrubberFromScroll();
+            }
+          }
+        });
+      }, { threshold: 0.35 });
+
+      const dpr = Math.min(window.devicePixelRatio || 1, 3);
+
+      // Compute effective zoom from page 1 if in fitWidth mode
+      const firstPage = await state.pdfDoc.getPage(1);
+      if (jobId !== state.renderJobId) return;
+      const firstUnscaled = firstPage.getViewport({ scale: 1.0 });
+      if (state.fitWidth) {
+        state.zoom = computeFitWidthZoom(firstUnscaled.width);
+      } else {
+        state.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, state.zoom || 1.0));
+      }
+      updateZoomControlsUI();
+
+      for (let pageNum = 1; pageNum <= state.totalPages; pageNum++) {
+        if (jobId !== state.renderJobId) return;
+        const page = (pageNum === 1) ? firstPage : await state.pdfDoc.getPage(pageNum);
+        if (jobId !== state.renderJobId) return;
+
+        const pdfScale = BASE_CSS_SCALE * state.zoom;
+        const viewport = page.getViewport({ scale: pdfScale });
+        const cssWidth = Math.round(viewport.width);
+        const cssHeight = Math.round(viewport.height);
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'pdf-page-wrapper';
+        wrapper.setAttribute('data-page-number', String(pageNum));
+        wrapper.style.width = `${cssWidth}px`;
+        wrapper.style.height = `${cssHeight}px`;
+
+        const canvas = document.createElement('canvas');
+        canvas.className = 'pdf-canvas';
+        canvas.style.width = `${cssWidth}px`;
+        canvas.style.height = `${cssHeight}px`;
+        canvas.width = Math.round(cssWidth * dpr);
+        canvas.height = Math.round(cssHeight * dpr);
+        const ctx = canvas.getContext('2d');
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        const highlightLayer = document.createElement('div');
+        highlightLayer.className = 'highlight-layer';
+        highlightLayer.setAttribute('data-hl-page', String(pageNum));
+
+        const textLayer = document.createElement('div');
+        textLayer.className = 'text-layer';
+        textLayer.setAttribute('data-text-page', String(pageNum));
+        textLayer.addEventListener('contextmenu', (e) => {
+          // Prevent mobile default callout from covering our floating selection bar
+          const sel = window.getSelection();
+          if (sel && !sel.isCollapsed) {
+            e.preventDefault();
+          }
+        });
+
+        wrapper.appendChild(canvas);
+        wrapper.appendChild(highlightLayer);
+        wrapper.appendChild(textLayer);
+        container.appendChild(wrapper);
+        pageObserver.observe(wrapper);
+
+        await page.render({ canvasContext: ctx, viewport }).promise;
+
+        // Build selectable text spans and calibrate each span's DOM width to exact PDF glyph width
+        const textContent = await page.getTextContent();
+        const spansToCalibrate = [];
+        for (const item of textContent.items) {
+          if (!item.str) continue;
+          const tx = window.pdfjsLib.Util.transform(viewport.transform, item.transform);
+          const fontHeight = Math.hypot(tx[2], tx[3]);
+          const left = tx[4];
+          const top = tx[5] - (fontHeight * 0.88);
+          const fontSizePx = Math.max(8, fontHeight);
+          const targetWidth = (typeof item.width === 'number' && item.width > 0)
+            ? (item.width * viewport.scale)
+            : 0;
+
+          const span = document.createElement('span');
+          span.textContent = item.str;
+          span.dataset.rawText = item.str;
+          span.style.left = `${left}px`;
+          span.style.top = `${top}px`;
+          span.style.fontSize = `${fontSizePx}px`;
+          span.style.height = `${Math.max(10, fontHeight * 1.05)}px`;
+          span.style.fontFamily = 'sans-serif';
+
+          if (targetWidth > 0) {
+            span.dataset.targetWidth = String(targetWidth);
+            spansToCalibrate.push({ span, targetWidth });
+          }
+          textLayer.appendChild(span);
+        }
+
+        // Batch-measure actual DOM span widths and apply exact scaleX transform
+        const measuredWidths = spansToCalibrate.map(entry => entry.span.getBoundingClientRect().width);
+        for (let i = 0; i < spansToCalibrate.length; i++) {
+          const domWidth = measuredWidths[i];
+          const targetWidth = spansToCalibrate[i].targetWidth;
+          if (domWidth > 0.5 && targetWidth > 0) {
+            const scaleX = targetWidth / domWidth;
+            spansToCalibrate[i].span.style.transform = `scaleX(${scaleX.toFixed(5)})`;
+            spansToCalibrate[i].span.dataset.scaleX = String(scaleX);
+          }
+        }
+
+        renderPageHighlights(pageNum);
+      }
+
+      container.style.minHeight = '';
+      const currentSearch = document.getElementById('docSearchInput').value.trim();
+      if (currentSearch) {
+        runInDocumentSearch(currentSearch);
+      }
+      if (readingAnchor) {
+        restoreReadingAnchor(readingAnchor);
+      }
+      requestAnimationFrame(() => {
+        if (jobId === state.renderJobId) {
+          state.isRenderingZoom = false;
+          updateScrubberFromScroll();
+        }
+      });
+    }
+
+    function getActiveFile() {
+      return state.files.find(f => f.id === state.activeFileId) || null;
+    }
+
+    function persistZoomState() {
+      const activeFile = getActiveFile();
+      if (activeFile) {
+        activeFile.zoom = state.zoom;
+        activeFile.fitWidth = state.fitWidth;
+        saveFileRecord(activeFile);
+      }
+      saveSessionState({ zoom: state.zoom, fitWidth: state.fitWidth });
+    }
+
+    function jumpToPage(pageNum, smooth = true) {
+      const clamped = Math.min(Math.max(1, pageNum), state.totalPages);
+      state.currentPage = clamped;
+      document.getElementById('pageJumpInput').value = String(clamped);
+      const target = document.querySelector(`.pdf-page-wrapper[data-page-number="${clamped}"]`);
+      if (target) {
+        target.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
+      }
+      const activeFile = getActiveFile();
+      if (activeFile) {
+        activeFile.lastPage = clamped;
+        saveFileRecord(activeFile);
+      }
+      saveSessionState({ lastPage: clamped });
+      updateScrubberThumbFromPage(clamped);
+    }
+
+    // =========================================================================
+    // 6B. OVERLAID RIGHT-SIDE PAGE SLIDER (SCRUBBER) ENGINE
+    // =========================================================================
+    function showPageScrubberTemporarily() {
+      if (state.view !== 'reader') return;
+      const hitArea = document.getElementById('pageScrubberHitArea');
+      if (!hitArea) return;
+      hitArea.classList.remove('opacity-0', 'pointer-events-none');
+      hitArea.classList.add('opacity-100', 'pointer-events-auto');
+      updateScrubberFromScroll();
+
+      if (state.scrubberHideTimer) {
+        clearTimeout(state.scrubberHideTimer);
+        state.scrubberHideTimer = null;
+      }
+      if (!state.scrubberDragging) {
+        state.scrubberHideTimer = setTimeout(() => {
+          if (!state.scrubberDragging) {
+            hidePageScrubber();
+          }
+        }, 3000);
+      }
+    }
+
+    function hidePageScrubber() {
+      const hitArea = document.getElementById('pageScrubberHitArea');
+      const bubble = document.getElementById('pageScrubberBubble');
+      if (hitArea) {
+        hitArea.classList.remove('opacity-100', 'pointer-events-auto');
+        hitArea.classList.add('opacity-0', 'pointer-events-none');
+      }
+      if (bubble) {
+        bubble.classList.add('hidden');
+      }
+    }
+
+    function getScrubberTrackMetrics() {
+      const track = document.getElementById('pageScrubberTrack');
+      const thumb = document.getElementById('pageScrubberThumb');
+      if (!track || !thumb) return null;
+      const trackRect = track.getBoundingClientRect();
+      const thumbHeight = thumb.offsetHeight || 28;
+      const usableHeight = Math.max(1, trackRect.height - thumbHeight);
+      return { track, thumb, trackRect, thumbHeight, usableHeight };
+    }
+
+    function setScrubberVisualPosition(ratio, pageNum) {
+      const m = getScrubberTrackMetrics();
+      if (!m) return;
+      const clampedRatio = Math.max(0, Math.min(1, ratio));
+      const topPx = Math.round(clampedRatio * m.usableHeight);
+      m.thumb.style.top = `${topPx}px`;
+
+      const bubble = document.getElementById('pageScrubberBubble');
+      if (bubble) {
+        bubble.style.top = `${topPx + Math.round(m.thumbHeight / 2)}px`;
+        bubble.textContent = `page ${pageNum} / ${state.totalPages}`;
+      }
+    }
+
+    function updateScrubberThumbFromPage(pageNum) {
+      if (state.scrubberDragging || state.view !== 'reader') return;
+      const ratio = state.totalPages > 1 ? (pageNum - 1) / (state.totalPages - 1) : 0;
+      setScrubberVisualPosition(ratio, pageNum);
+    }
+
+    function updateScrubberFromScroll() {
+      if (state.scrubberDragging || state.view !== 'reader') return;
+      const container = document.getElementById('pdfPagesContainer');
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const docTop = window.scrollY + rect.top;
+      const maxScroll = Math.max(1, (docTop + rect.height) - window.innerHeight);
+      let ratio = 0;
+      if (rect.height > window.innerHeight * 0.85 && maxScroll > docTop) {
+        ratio = Math.max(0, Math.min(1, (window.scrollY - docTop) / (maxScroll - docTop)));
+      } else if (state.totalPages > 1) {
+        ratio = (state.currentPage - 1) / (state.totalPages - 1);
+      }
+      setScrubberVisualPosition(ratio, state.currentPage);
+    }
+
+    function handleScrubberPointerMove(clientY) {
+      const m = getScrubberTrackMetrics();
+      if (!m) return;
+      const rawOffset = clientY - m.trackRect.top - (m.thumbHeight / 2);
+      const ratio = Math.max(0, Math.min(1, rawOffset / m.usableHeight));
+      const targetPage = state.totalPages > 1
+        ? Math.min(state.totalPages, Math.max(1, Math.round(ratio * (state.totalPages - 1)) + 1))
+        : 1;
+
+      setScrubberVisualPosition(ratio, targetPage);
+
+      // Scroll page smoothly in sync with drag
+      const container = document.getElementById('pdfPagesContainer');
+      if (container) {
+        const rect = container.getBoundingClientRect();
+        const docTop = window.scrollY + rect.top;
+        const maxScroll = Math.max(docTop, (docTop + rect.height) - window.innerHeight);
+        if (maxScroll > docTop) {
+          const targetY = docTop + ratio * (maxScroll - docTop);
+          window.scrollTo({ top: targetY, behavior: 'auto' });
+        } else {
+          const pageEl = document.querySelector(`.pdf-page-wrapper[data-page-number="${targetPage}"]`);
+          if (pageEl) pageEl.scrollIntoView({ behavior: 'auto', block: 'start' });
+        }
+      }
+
+      if (targetPage !== state.currentPage) {
+        state.currentPage = targetPage;
+        document.getElementById('pageJumpInput').value = String(targetPage);
+        const activeFile = getActiveFile();
+        if (activeFile) {
+          activeFile.lastPage = targetPage;
+          saveFileRecord(activeFile);
+        }
+        saveSessionState({ lastPage: targetPage });
+      }
+    }
+
+    // =========================================================================
+    // 7. FLOATING SELECTION TOOLBAR & HIGHLIGHTER ENGINE
+    // =========================================================================
+    function renderPageHighlights(pageNum) {
+      const activeFile = getActiveFile();
+      const layer = document.querySelector(`.highlight-layer[data-hl-page="${pageNum}"]`);
+      if (!layer || !activeFile) return;
+      layer.innerHTML = '';
+
+      const pageHighlights = (activeFile.highlights || []).filter(h => h.pageNum === pageNum);
+      for (const hl of pageHighlights) {
+        const colorDef = HIGHLIGHT_COLORS[hl.color] || HIGHLIGHT_COLORS.yellow;
+        for (const r of (hl.rects || [])) {
+          const rectEl = document.createElement('div');
+          rectEl.className = 'highlight-rect';
+          rectEl.style.left = `${r.xPct * 100}%`;
+          rectEl.style.top = `${r.yPct * 100}%`;
+          rectEl.style.width = `${r.wPct * 100}%`;
+          rectEl.style.height = `${r.hPct * 100}%`;
+          rectEl.style.backgroundColor = colorDef.css;
+          rectEl.title = `${colorDef.name} highlight — click to change color or remove`;
+          rectEl.setAttribute('data-hl-id', hl.id);
+          rectEl.addEventListener('click', (e) => {
+            e.stopPropagation();
+            hideSelectionToolbar();
+            openHighlightPopover(hl.id, e.clientX, e.clientY);
+          });
+          layer.appendChild(rectEl);
+        }
+      }
+    }
+
+    function computeExactSelectionRects(range, wrapper, wrapperRect) {
+      const textLayer = wrapper.querySelector('.text-layer');
+      if (!textLayer) return [];
+
+      // Collect all text nodes inside this page's textLayer that are part of the selection
+      const walker = document.createTreeWalker(textLayer, NodeFilter.SHOW_TEXT, null);
+      const selectedSlices = [];
+      let node;
+      while ((node = walker.nextNode())) {
+        if (!range.intersectsNode(node)) continue;
+        const textVal = node.nodeValue || '';
+        if (!textVal) continue;
+
+        let startOffset = (node === range.startContainer) ? range.startOffset : 0;
+        let endOffset = (node === range.endContainer) ? range.endOffset : textVal.length;
+        if (endOffset <= startOffset) continue;
+
+        selectedSlices.push({ node, textVal, startOffset, endOffset });
+      }
+
+      if (selectedSlices.length === 0) return [];
+
+      // Trim leading whitespace on first slice and trailing whitespace on last slice
+      const first = selectedSlices[0];
+      while (first.startOffset < first.endOffset && /\s/.test(first.textVal[first.startOffset])) {
+        first.startOffset++;
+      }
+      const last = selectedSlices[selectedSlices.length - 1];
+      while (last.endOffset > last.startOffset && /\s/.test(last.textVal[last.endOffset - 1])) {
+        last.endOffset--;
+      }
+
+      const rawBoxes = [];
+      for (let i = 0; i < selectedSlices.length; i++) {
+        const sl = selectedSlices[i];
+        let sOff = sl.startOffset;
+        let eOff = sl.endOffset;
+
+        // Also trim trailing spaces at the end of any span so line-end whitespace is never highlighted
+        while (eOff > sOff && /\s/.test(sl.textVal[eOff - 1])) {
+          eOff--;
+        }
+        if (eOff <= sOff) continue;
+
+        const spanEl = sl.node.parentElement ? sl.node.parentElement.closest('.text-layer > span') : null;
+        const subRange = document.createRange();
+        subRange.setStart(sl.node, sOff);
+        subRange.setEnd(sl.node, eOff);
+
+        const rects = Array.from(subRange.getClientRects());
+        for (const r of rects) {
+          if (r.width < 1 || r.height < 2) continue;
+          let left = r.left;
+          let right = r.right;
+          let top = r.top;
+          let bottom = r.bottom;
+
+          // Clamp right edge to the parent span's calibrated PDF glyph width so it never overflows right
+          if (spanEl) {
+            const spanRect = spanEl.getBoundingClientRect();
+            const targetW = parseFloat(spanEl.dataset.targetWidth || '0');
+            const maxSpanRight = targetW > 0 ? (spanRect.left + targetW) : spanRect.right;
+            if (right > maxSpanRight) {
+              right = maxSpanRight;
+            }
+            if (left < spanRect.left) {
+              left = spanRect.left;
+            }
+          }
+
+          if (right - left >= 1.5) {
+            rawBoxes.push({ left, right, top, bottom, height: bottom - top });
+          }
+        }
+      }
+
+      if (rawBoxes.length === 0) return [];
+
+      // Sort boxes top-to-bottom, then left-to-right, and merge boxes on the same line
+      rawBoxes.sort((a, b) => {
+        if (Math.abs(a.top - b.top) > Math.min(a.height, b.height) * 0.55) {
+          return a.top - b.top;
+        }
+        return a.left - b.left;
+      });
+
+      const mergedLines = [];
+      for (const box of rawBoxes) {
+        const prev = mergedLines[mergedLines.length - 1];
+        if (
+          prev &&
+          Math.abs(box.top - prev.top) <= Math.min(box.height, prev.height) * 0.6 &&
+          box.left <= prev.right + Math.max(12, prev.height * 0.9)
+        ) {
+          prev.left = Math.min(prev.left, box.left);
+          prev.right = Math.max(prev.right, box.right);
+          prev.top = Math.min(prev.top, box.top);
+          prev.bottom = Math.max(prev.bottom, box.bottom);
+          prev.height = prev.bottom - prev.top;
+        } else {
+          mergedLines.push({ ...box });
+        }
+      }
+
+      return mergedLines.map(b => {
+        const xPct = Math.max(0, Math.min(1, (b.left - wrapperRect.left) / wrapperRect.width));
+        const yPct = Math.max(0, Math.min(1, (b.top - wrapperRect.top) / wrapperRect.height));
+        const wPct = Math.max(0.002, Math.min(1 - xPct, (b.right - b.left) / wrapperRect.width));
+        const hPct = Math.max(0.004, Math.min(1 - yPct, (b.bottom - b.top) / wrapperRect.height));
+        return { xPct, yPct, wPct, hPct };
+      });
+    }
+
+    function evaluateCurrentSelection() {
+      if (state.view !== 'reader') {
+        hideSelectionToolbar();
+        return;
+      }
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.rangeCount) {
+        hideSelectionToolbar();
+        return;
+      }
+      const selectedText = sel.toString().trim();
+      if (!selectedText) {
+        hideSelectionToolbar();
+        return;
+      }
+
+      const range = sel.getRangeAt(0);
+      const startNode = range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement;
+      const startWrapper = startNode ? startNode.closest('.pdf-page-wrapper') : null;
+      if (!startWrapper) {
+        hideSelectionToolbar();
+        return;
+      }
+
+      const pageNum = parseInt(startWrapper.getAttribute('data-page-number'), 10);
+      const wrapperRect = startWrapper.getBoundingClientRect();
+      if (!wrapperRect.width || !wrapperRect.height) return;
+
+      const normalizedRects = computeExactSelectionRects(range, startWrapper, wrapperRect);
+      if (normalizedRects.length === 0) {
+        hideSelectionToolbar();
+        return;
+      }
+
+      const boundingRect = range.getBoundingClientRect();
+      state.pendingSelection = {
+        pageNum,
+        text: selectedText,
+        rects: normalizedRects,
+        boundingRect
+      };
+
+      showSelectionToolbar(boundingRect);
+    }
+
+    function showSelectionToolbar(boundingRect) {
+      const bar = document.getElementById('selectionToolbar');
+      bar.classList.remove('hidden');
+
+      const barWidth = bar.offsetWidth || 270;
+      const barHeight = bar.offsetHeight || 38;
+      const verticalGap = 56; // 50-60px above selection so it never covers text or handles
+
+      let left = boundingRect.left + (boundingRect.width / 2) - (barWidth / 2);
+      left = Math.max(8, Math.min(left, window.innerWidth - barWidth - 8));
+
+      // Place 56px above the top of the selection; if no room above, place 56px below the selection
+      let top = boundingRect.top - barHeight - verticalGap;
+      if (top < 8) {
+        top = Math.min(window.innerHeight - barHeight - 8, boundingRect.bottom + verticalGap);
+      }
+
+      bar.style.left = `${Math.round(left)}px`;
+      bar.style.top = `${Math.round(top)}px`;
+    }
+
+    function hideSelectionToolbar() {
+      state.pendingSelection = null;
+      const bar = document.getElementById('selectionToolbar');
+      if (bar) bar.classList.add('hidden');
+    }
+
+    function commitPendingHighlight(colorKey) {
+      const pending = state.pendingSelection;
+      if (!pending) return;
+      const chosenColor = colorKey || state.activeColor || 'yellow';
+      state.activeColor = chosenColor;
+      updateActiveSwatchRing(chosenColor);
+
+      const activeFile = getActiveFile();
+      if (!activeFile) return;
+
+      const newHl = {
+        id: 'hl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+        pageNum: pending.pageNum,
+        color: chosenColor,
+        text: pending.text,
+        rects: pending.rects,
+        createdAt: Date.now()
+      };
+
+      activeFile.highlights = activeFile.highlights || [];
+      activeFile.highlights.push(newHl);
+      saveFileRecord(activeFile);
+      renderPageHighlights(pending.pageNum);
+      updateHighlightCountBadge();
+
+      const sel = window.getSelection();
+      if (sel) sel.removeAllRanges();
+      hideSelectionToolbar();
+      showToast(`Highlighted in ${HIGHLIGHT_COLORS[chosenColor].name}`);
+    }
+
+    async function copyPendingSelectionText() {
+      const pending = state.pendingSelection;
+      const sel = window.getSelection();
+      const textToCopy = (pending && pending.text) || (sel ? sel.toString().trim() : '');
+      if (!textToCopy) return;
+
+      let copied = false;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        try {
+          await navigator.clipboard.writeText(textToCopy);
+          copied = true;
+        } catch (e) {}
+      }
+      if (!copied) {
+        const ta = document.createElement('textarea');
+        ta.value = textToCopy;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+          document.execCommand('copy');
+          copied = true;
+        } catch (e) {}
+        document.body.removeChild(ta);
+      }
+
+      if (sel) sel.removeAllRanges();
+      hideSelectionToolbar();
+      showToast('Copied selection to clipboard');
+    }
+
+    function updateActiveSwatchRing(colorKey) {
+      document.querySelectorAll('.hl-swatch').forEach(b => {
+        b.classList.remove('ring-2', 'ring-offset-1', 'ring-blue-600');
+        if (b.getAttribute('data-color') === colorKey) {
+          b.classList.add('ring-2', 'ring-offset-1', 'ring-blue-600');
+        }
+      });
+    }
+
+    function openHighlightPopover(hlId, clientX, clientY) {
+      state.selectedHighlightId = hlId;
+      const popover = document.getElementById('highlightPopover');
+      popover.classList.remove('hidden');
+      const left = Math.min(Math.max(12, clientX - 90), window.innerWidth - 260);
+      const top = Math.max(12, clientY - 52);
+      popover.style.left = `${left}px`;
+      popover.style.top = `${top}px`;
+    }
+
+    function closeHighlightPopover() {
+      state.selectedHighlightId = null;
+      document.getElementById('highlightPopover').classList.add('hidden');
+    }
+
+    function updateHighlightCountBadge() {
+      const activeFile = getActiveFile();
+      const count = activeFile && activeFile.highlights ? activeFile.highlights.length : 0;
+      document.getElementById('hlCountBadge').textContent = String(count);
+    }
+
+    // =========================================================================
+    // 8. WORD-LEVEL IN-DOCUMENT SEARCH (BRIGHT ORANGE, "3 of 12", ▲ / ▼)
+    // =========================================================================
+    function clearSearchMarks() {
+      document.querySelectorAll('.text-layer span').forEach(span => {
+        if (span.dataset.rawText !== undefined) {
+          span.textContent = span.dataset.rawText;
+        }
+      });
+      state.docSearchMatches = [];
+      state.docSearchIndex = -1;
+    }
+
+    function runInDocumentSearch(query) {
+      clearSearchMarks();
+      const countEl = document.getElementById('docSearchCount');
+      const clearBtn = document.getElementById('docSearchClearBtn');
+
+      if (!query) {
+        countEl.classList.add('hidden');
+        clearBtn.classList.add('hidden');
+        return;
+      }
+
+      clearBtn.classList.remove('hidden');
+      const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(`(${escapedQuery})`, 'gi');
+
+      const pages = document.querySelectorAll('.pdf-page-wrapper');
+      pages.forEach(wrapper => {
+        wrapper.querySelectorAll('.text-layer span').forEach(span => {
+          const raw = span.dataset.rawText !== undefined ? span.dataset.rawText : (span.textContent || '');
+          if (!raw || !regex.test(raw)) return;
+          regex.lastIndex = 0;
+
+          const parts = raw.split(regex);
+          span.innerHTML = '';
+          parts.forEach(part => {
+            if (!part) return;
+            if (part.toLowerCase() === query.toLowerCase()) {
+              const mark = document.createElement('mark');
+              mark.className = 'search-word-match';
+              mark.textContent = part;
+              span.appendChild(mark);
+              state.docSearchMatches.push(mark);
+            } else {
+              span.appendChild(document.createTextNode(part));
+            }
+          });
+        });
+      });
+
+      countEl.classList.remove('hidden');
+      if (state.docSearchMatches.length === 0) {
+        countEl.textContent = '0 of 0';
+        return;
+      }
+      stepSearchMatch(1);
+    }
+
+    function stepSearchMatch(delta) {
+      if (state.docSearchMatches.length === 0) return;
+      state.docSearchMatches.forEach(m => m.classList.remove('search-word-active'));
+      state.docSearchIndex = (state.docSearchIndex + delta + state.docSearchMatches.length) % state.docSearchMatches.length;
+      const activeMark = state.docSearchMatches[state.docSearchIndex];
+      activeMark.classList.add('search-word-active');
+      activeMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      document.getElementById('docSearchCount').textContent = `${state.docSearchIndex + 1} of ${state.docSearchMatches.length}`;
+    }
+
+    // =========================================================================
+    // 9. EXPORT & PRINT ENGINE (3 MODES FOR BOTH DOWNLOAD & PRINT)
+    //    1. With highlight colors: ENTIRE pages with highlight colors drawn
+    //    2. Without colors (plain): ONLY highlighted text, black on white A4, "Page N" labels
+    //    3. Highlighted parts only: ONLY highlighted text on A4, colored background behind text
+    // =========================================================================
+    async function buildExportPdfBytes(mode) {
+      const activeFile = getActiveFile();
+      if (!activeFile || !activeFile.pdfBytes) return null;
+
+      const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
+      const highlights = activeFile.highlights || [];
+
+      // Mode 1: "With highlight colors" — output the ENTIRE pages with highlight colors drawn on them
+      if (mode === 'with-highlights') {
+        const srcDoc = await PDFDocument.load(activeFile.pdfBytes.slice());
+        const pages = srcDoc.getPages();
+        for (const hl of highlights) {
+          const pIdx = (hl.pageNum || 1) - 1;
+          if (pIdx < 0 || pIdx >= pages.length) continue;
+          const p = pages[pIdx];
+          const { width, height } = p.getSize();
+          const c = (HIGHLIGHT_COLORS[hl.color] || HIGHLIGHT_COLORS.yellow).rgb;
+
+          for (const r of (hl.rects || [])) {
+            const rectW = r.wPct * width;
+            const rectH = r.hPct * height;
+            const rectX = r.xPct * width;
+            const rectY = height - (r.yPct * height) - rectH;
+            p.drawRectangle({
+              x: rectX,
+              y: rectY,
+              width: rectW,
+              height: rectH,
+              color: rgb(c[0], c[1], c[2]),
+              opacity: 0.42
+            });
+          }
+        }
+        const outBytes = await srcDoc.save();
+        return new Uint8Array(outBytes);
+      }
+
+      // Modes 2 & 3 require at least 1 highlight; if none, return null so UI shows short message
+      if (highlights.length === 0) {
+        return null;
+      }
+
+      // Sort highlights in page order (then top-to-bottom, left-to-right on each page)
+      const sortedHighlights = [...highlights].sort((a, b) => {
+        if (a.pageNum !== b.pageNum) return a.pageNum - b.pageNum;
+        const ay = (a.rects && a.rects[0]) ? a.rects[0].yPct : 0;
+        const by = (b.rects && b.rects[0]) ? b.rects[0].yPct : 0;
+        if (Math.abs(ay - by) > 0.005) return ay - by;
+        const ax = (a.rects && a.rects[0]) ? a.rects[0].xPct : 0;
+        const bx = (b.rects && b.rects[0]) ? b.rects[0].xPct : 0;
+        return ax - bx;
+      });
+
+      const outDoc = await PDFDocument.create();
+      const fontRegular = await outDoc.embedFont(StandardFonts.Helvetica);
+
+      const marginX = 50;
+      const marginTop = 54;
+      const marginBottom = 52;
+      const maxWidth = A4_WIDTH - marginX * 2;
+      const coloredMode = (mode === 'highlights-only');
+
+      let page = outDoc.addPage([A4_WIDTH, A4_HEIGHT]);
+      let y = A4_HEIGHT - marginTop;
+
+      function ensureVerticalSpace(needed) {
+        if (y - needed < marginBottom) {
+          page = outDoc.addPage([A4_WIDTH, A4_HEIGHT]);
+          y = A4_HEIGHT - marginTop;
+        }
+      }
+
+      // Output ONLY the highlighted text in page order (no "Page N" labels and no headings)
+      for (const hl of sortedHighlights) {
+        const cleanSnippet = sanitizeWinAnsi(hl.text || '').replace(/\s+/g, ' ').trim();
+        if (!cleanSnippet) continue;
+        const fontSize = 11;
+        const lineHeight = 16;
+        const wrapped = wrapLine(cleanSnippet, fontRegular, fontSize, maxWidth - 12);
+        const colorDef = HIGHLIGHT_COLORS[hl.color] || HIGHLIGHT_COLORS.yellow;
+
+        for (const lineStr of wrapped) {
+          const trimmedLine = lineStr.replace(/\s+$/, '');
+          if (!trimmedLine) continue;
+          ensureVerticalSpace(lineHeight + 4);
+          if (coloredMode) {
+            const exactTextW = fontRegular.widthOfTextAtSize(trimmedLine, fontSize);
+            const rectWidth = Math.min(maxWidth, exactTextW + 6);
+            page.drawRectangle({
+              x: marginX,
+              y: y - fontSize - 3,
+              width: Math.max(4, rectWidth),
+              height: fontSize + 5,
+              color: rgb(colorDef.rgb[0], colorDef.rgb[1], colorDef.rgb[2]),
+              opacity: 0.65
+            });
+          }
+          page.drawText(trimmedLine, {
+            x: marginX + (coloredMode ? 3 : 0),
+            y: y - fontSize,
+            size: fontSize,
+            font: fontRegular,
+            color: rgb(0, 0, 0)
+          });
+          y -= lineHeight;
+        }
+        y -= 10;
+      }
+
+      const outBytes = await outDoc.save();
+      return new Uint8Array(outBytes);
+    }
+
+    function uint8ToBase64DataUri(bytes) {
+      return 'data:application/pdf;base64,' + uint8ToBase64(bytes);
+    }
+
+    function cleanupPrintResources() {
+      if (state.printIframe) {
+        try {
+          state.printIframe.remove();
+        } catch (e) {}
+        state.printIframe = null;
+      }
+      document.querySelectorAll('iframe.print-job-iframe').forEach(el => {
+        try { el.remove(); } catch (e) {}
+      });
+      if (state.printBlobUrl) {
+        try {
+          URL.revokeObjectURL(state.printBlobUrl);
+        } catch (e) {}
+        state.printBlobUrl = null;
+      }
+    }
+
+    async function refreshExportModalPreview() {
+      const jobId = ++state.exportJobId;
+      const modeRadio = document.querySelector('input[name="exportMode"]:checked');
+      const mode = modeRadio ? modeRadio.value : 'with-highlights';
+      const statusEl = document.getElementById('exportStatusText');
+      const emptyNotice = document.getElementById('exportEmptyHighlightsNotice');
+      const previewContainer = document.getElementById('exportPreviewContainer');
+      const dlLink = document.getElementById('shieldedDownloadLink');
+      const iframeViewer = document.getElementById('exportIframeViewer');
+
+      // Highlight selected mode card
+      const modeCards = {
+        'with-highlights': document.getElementById('modeCardWithHighlights'),
+        'without-highlights': document.getElementById('modeCardPlain'),
+        'highlights-only': document.getElementById('modeCardHighlightsOnly')
+      };
+      Object.entries(modeCards).forEach(([k, card]) => {
+        if (!card) return;
+        if (k === mode) {
+          card.className = 'cursor-pointer rounded-xl border p-3 transition flex flex-col justify-between border-blue-600 bg-blue-50/50 dark:bg-blue-950/30 dark:border-blue-500';
+        } else {
+          card.className = 'cursor-pointer rounded-xl border border-slate-200 dark:border-slate-800 p-3 transition flex flex-col justify-between hover:border-slate-300 dark:hover:border-slate-700';
+        }
+      });
+
+      const activeFile = getActiveFile();
+      const highlights = (activeFile && activeFile.highlights) ? activeFile.highlights : [];
+
+      if (highlights.length === 0 && (mode === 'without-highlights' || mode === 'highlights-only')) {
+        emptyNotice.classList.remove('hidden');
+        previewContainer.classList.add('hidden');
+        dlLink.setAttribute('data-disabled', 'true');
+        dlLink.href = 'data:application/pdf;base64,';
+        dlLink.classList.add('opacity-50', 'pointer-events-none');
+        document.getElementById('triggerPrintBtn').classList.add('opacity-50');
+        document.getElementById('printContainer').innerHTML = '';
+        if (iframeViewer) iframeViewer.src = 'about:blank';
+        if (state.exportBlobUrl) {
+          URL.revokeObjectURL(state.exportBlobUrl);
+          state.exportBlobUrl = null;
+        }
+        statusEl.textContent = 'No highlights to export';
+        return;
+      }
+
+      emptyNotice.classList.add('hidden');
+      previewContainer.classList.remove('hidden');
+      dlLink.removeAttribute('data-disabled');
+      dlLink.classList.remove('opacity-50', 'pointer-events-none');
+      document.getElementById('triggerPrintBtn').classList.remove('opacity-50');
+      statusEl.textContent = 'Preparing…';
+
+      const pdfBytes = await buildExportPdfBytes(mode);
+      if (!pdfBytes || jobId !== state.exportJobId) return;
+
+      const baseName = (activeFile ? activeFile.name : 'document.pdf').replace(/\.pdf$/i, '');
+      const suffix = mode === 'with-highlights' ? '-with-highlights.pdf' : mode === 'without-highlights' ? '-plain-highlights.pdf' : '-highlighted-parts.pdf';
+
+      const dataUri = uint8ToBase64DataUri(pdfBytes);
+      dlLink.href = dataUri;
+      dlLink.setAttribute('download', baseName + suffix);
+
+      // Clear old preview iframe src and revoke previous blob URL before assigning new one
+      if (iframeViewer) iframeViewer.src = 'about:blank';
+      if (state.exportBlobUrl) {
+        URL.revokeObjectURL(state.exportBlobUrl);
+        state.exportBlobUrl = null;
+      }
+      const blob = new Blob([pdfBytes.slice()], { type: 'application/pdf' });
+      state.exportBlobUrl = URL.createObjectURL(blob);
+      if (iframeViewer) iframeViewer.src = state.exportBlobUrl;
+
+      const previewList = document.getElementById('exportCanvasPreviewList');
+      const printContainer = document.getElementById('printContainer');
+      previewList.innerHTML = '';
+      printContainer.innerHTML = '';
+
+      const pdfProxy = await window.pdfjsLib.getDocument({ data: pdfBytes.slice() }).promise;
+      if (jobId !== state.exportJobId) return;
+      document.getElementById('exportPreviewPageCount').textContent = String(pdfProxy.numPages);
+
+      for (let p = 1; p <= pdfProxy.numPages; p++) {
+        if (jobId !== state.exportJobId) return;
+        const page = await pdfProxy.getPage(p);
+        const thumbVp = page.getViewport({ scale: 0.32 });
+        const thumbCanvas = document.createElement('canvas');
+        thumbCanvas.width = Math.floor(thumbVp.width);
+        thumbCanvas.height = Math.floor(thumbVp.height);
+        thumbCanvas.className = 'rounded border border-slate-300 dark:border-slate-700 shadow-xs bg-white shrink-0';
+        await page.render({ canvasContext: thumbCanvas.getContext('2d'), viewport: thumbVp }).promise;
+        if (jobId !== state.exportJobId) return;
+        previewList.appendChild(thumbCanvas);
+      }
+
+      statusEl.textContent = `Ready (${formatBytes(pdfBytes.byteLength)})`;
+    }
+
+    async function executePrintForCurrentMode() {
+      const modeRadio = document.querySelector('input[name="exportMode"]:checked');
+      const mode = modeRadio ? modeRadio.value : 'with-highlights';
+      const activeFile = getActiveFile();
+      const highlights = (activeFile && activeFile.highlights) ? activeFile.highlights : [];
+
+      if (highlights.length === 0 && (mode === 'without-highlights' || mode === 'highlights-only')) {
+        showToast('No highlights in this document yet — add highlights first.');
+        return;
+      }
+
+      const statusEl = document.getElementById('exportStatusText');
+      const printBtn = document.getElementById('triggerPrintBtn');
+      const printBtnLabel = printBtn.querySelector('span');
+      const origLabel = printBtnLabel ? printBtnLabel.textContent : 'Print / Save as PDF';
+
+      // Cancel any in-flight preview job and show "Preparing…" immediately
+      const jobId = ++state.exportJobId;
+      cleanupPrintResources();
+      statusEl.textContent = 'Preparing…';
+      if (printBtnLabel) printBtnLabel.textContent = 'Preparing…';
+      printBtn.disabled = true;
+
+      try {
+        // 1. Build the exact PDF for the current active document and selected mode first
+        const pdfBytes = await buildExportPdfBytes(mode);
+        if (!pdfBytes || jobId !== state.exportJobId) return;
+
+        // Also keep download link & preview blob in sync with this exact build
+        const baseName = (activeFile ? activeFile.name : 'document.pdf').replace(/\.pdf$/i, '');
+        const suffix = mode === 'with-highlights' ? '-with-highlights.pdf' : mode === 'without-highlights' ? '-plain-highlights.pdf' : '-highlighted-parts.pdf';
+        const dlLink = document.getElementById('shieldedDownloadLink');
+        dlLink.href = uint8ToBase64DataUri(pdfBytes);
+        dlLink.setAttribute('download', baseName + suffix);
+
+        // Temporarily unload the modal's embedded PDF iframe so browser print never grabs an old embedded PDF
+        const iframeViewer = document.getElementById('exportIframeViewer');
+        if (iframeViewer) iframeViewer.src = 'about:blank';
+        if (state.exportBlobUrl) {
+          URL.revokeObjectURL(state.exportBlobUrl);
+          state.exportBlobUrl = null;
+        }
+
+        // 2. Render high-resolution pages from the newly built PDF and wait for all images to decode
+        const pdfProxy = await window.pdfjsLib.getDocument({ data: pdfBytes.slice() }).promise;
+        const pageDataUrls = [];
+        const printContainer = document.getElementById('printContainer');
+        printContainer.innerHTML = '';
+
+        for (let p = 1; p <= pdfProxy.numPages; p++) {
+          const page = await pdfProxy.getPage(p);
+          const printVp = page.getViewport({ scale: 1.8 });
+          const printCanvas = document.createElement('canvas');
+          printCanvas.width = Math.floor(printVp.width);
+          printCanvas.height = Math.floor(printVp.height);
+          await page.render({ canvasContext: printCanvas.getContext('2d'), viewport: printVp }).promise;
+          const dataUrl = printCanvas.toDataURL('image/png');
+          pageDataUrls.push(dataUrl);
+
+          const hostImg = document.createElement('img');
+          hostImg.className = 'print-page-img';
+          hostImg.src = dataUrl;
+          hostImg.alt = `Printable Page ${p}`;
+          printContainer.appendChild(hostImg);
+          if (hostImg.decode) {
+            try { await hostImg.decode(); } catch (e) {}
+          }
+        }
+
+        // 3. Create a fresh hidden print iframe each time and wait until it and all pages have fully loaded
+        const freshBlob = new Blob([pdfBytes.slice()], { type: 'application/pdf' });
+        state.printBlobUrl = URL.createObjectURL(freshBlob);
+
+        const printIframe = document.createElement('iframe');
+        printIframe.className = 'print-job-iframe';
+        printIframe.setAttribute('title', 'Print Document Frame');
+        printIframe.style.position = 'fixed';
+        printIframe.style.right = '0';
+        printIframe.style.bottom = '0';
+        printIframe.style.width = '1px';
+        printIframe.style.height = '1px';
+        printIframe.style.border = '0';
+        printIframe.style.opacity = '0';
+        printIframe.style.pointerEvents = 'none';
+        document.body.appendChild(printIframe);
+        state.printIframe = printIframe;
+
+        const iframeHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(baseName + suffix)}</title><style>
+          @page { margin: 0; }
+          html, body { margin: 0; padding: 0; background: #fff; }
+          img { display: block; width: 100%; max-width: 100%; height: auto; page-break-after: always; break-after: page; margin: 0 auto; }
+          img:last-child { page-break-after: auto; break-after: auto; }
+        </style></head><body>${pageDataUrls.map((u, i) => `<img src="${u}" alt="Page ${i + 1}" />`).join('')}</body></html>`;
+
+        await new Promise((resolve) => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+          };
+          printIframe.onload = async () => {
+            try {
+              const doc = printIframe.contentDocument;
+              const imgs = doc ? Array.from(doc.querySelectorAll('img')) : [];
+              await Promise.all(imgs.map(img => {
+                if (img.decode) return img.decode().catch(() => {});
+                if (img.complete) return Promise.resolve();
+                return new Promise(r => { img.onload = r; img.onerror = r; });
+              }));
+            } catch (e) {}
+            requestAnimationFrame(() => requestAnimationFrame(finish));
+          };
+          const doc = printIframe.contentWindow.document;
+          doc.open();
+          doc.write(iframeHtml);
+          doc.close();
+          setTimeout(finish, 1200);
+        });
+
+        statusEl.textContent = `Ready (${formatBytes(pdfBytes.byteLength)})`;
+        if (printBtnLabel) printBtnLabel.textContent = origLabel;
+        printBtn.disabled = false;
+
+        // 4. Clean up iframe and revoke blob URL after printing finishes
+        const handleAfterPrint = () => {
+          cleanupPrintResources();
+          if (iframeViewer && !state.exportBlobUrl) {
+            state.exportBlobUrl = URL.createObjectURL(new Blob([pdfBytes.slice()], { type: 'application/pdf' }));
+            iframeViewer.src = state.exportBlobUrl;
+          }
+        };
+
+        if (printIframe.contentWindow) {
+          printIframe.contentWindow.addEventListener('afterprint', handleAfterPrint, { once: true });
+        }
+        window.addEventListener('afterprint', handleAfterPrint, { once: true });
+
+        // Trigger print on the fully loaded fresh iframe (with host window.print fallback)
+        try {
+          printIframe.contentWindow.focus();
+          printIframe.contentWindow.print();
+        } catch (err) {
+          window.print();
+        }
+
+        // Restore preview iframe and ensure cleanup once dialog closes
+        setTimeout(handleAfterPrint, 2500);
+      } catch (err) {
+        statusEl.textContent = 'Ready';
+        if (printBtnLabel) printBtnLabel.textContent = origLabel;
+        printBtn.disabled = false;
+        cleanupPrintResources();
+      }
+    }
+
+    // =========================================================================
+    // 10. UI HELPERS: TOASTS, MODALS, THEME, PINCH ZOOM
+    // =========================================================================
+    let toastTimer = null;
+    function showToast(msg) {
+      const el = document.getElementById('toastBanner');
+      el.textContent = msg;
+      el.classList.remove('hidden');
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.add('hidden'), 3200);
+    }
+
+    function openDialogModal({ title, message, initialValue, showInput, confirmLabel, onConfirm }) {
+      const modal = document.getElementById('dialogModal');
+      const titleEl = document.getElementById('dialogTitle');
+      const msgEl = document.getElementById('dialogMessage');
+      const inputEl = document.getElementById('dialogInput');
+      const confirmBtn = document.getElementById('dialogConfirmBtn');
+
+      titleEl.textContent = title;
+      if (message) {
+        msgEl.textContent = message;
+        msgEl.classList.remove('hidden');
+      } else {
+        msgEl.classList.add('hidden');
+      }
+
+      if (showInput) {
+        inputEl.value = initialValue || '';
+        inputEl.classList.remove('hidden');
+      } else {
+        inputEl.classList.add('hidden');
+      }
+
+      confirmBtn.textContent = confirmLabel || 'Confirm';
+      modal.classList.remove('hidden');
+      if (showInput) setTimeout(() => inputEl.focus(), 50);
+
+      confirmBtn.onclick = () => {
+        const val = inputEl.value.trim();
+        modal.classList.add('hidden');
+        onConfirm(val);
+      };
+    }
+
+    function renderHighlightsModalList() {
+      const activeFile = getActiveFile();
+      const listEl = document.getElementById('highlightsListContainer');
+      const highlights = activeFile && activeFile.highlights ? activeFile.highlights : [];
+
+      if (highlights.length === 0) {
+        listEl.innerHTML = `<p class="text-xs text-slate-500 dark:text-slate-400 py-6 text-center">No highlights in this document yet. Select any text on a page to highlight it.</p>`;
+        return;
+      }
+
+      listEl.innerHTML = highlights.map(hl => {
+        const c = HIGHLIGHT_COLORS[hl.color] || HIGHLIGHT_COLORS.yellow;
+        return `
+          <div class="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 flex items-start justify-between gap-2">
+            <div class="space-y-1 min-w-0 flex-1 cursor-pointer" data-jump-page="${hl.pageNum}">
+              <div class="flex items-center gap-2">
+                <span class="px-2 py-0.5 rounded text-[10px] font-semibold ${c.badge}">${c.name}</span>
+                <span class="text-[11px] text-slate-500">Page ${hl.pageNum}</span>
+              </div>
+              <p class="text-xs text-slate-800 dark:text-slate-200 break-words">"${escapeHtml(hl.text)}"</p>
+            </div>
+            <button type="button" data-remove-hl="${hl.id}" class="text-xs text-red-500 hover:text-red-700 px-1.5 py-0.5 shrink-0" title="Remove highlight">✕</button>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // =========================================================================
+    // 11. EVENT LISTENERS & INITIALIZATION
+    // =========================================================================
+    window.addEventListener('DOMContentLoaded', async () => {
+      // Theme initialization
+      try {
+        const savedTheme = localStorage.getItem('driveread_theme');
+        if (savedTheme === 'dark') {
+          document.documentElement.classList.add('dark');
+        }
+      } catch (e) {}
+
+      document.getElementById('themeToggleBtn').addEventListener('click', () => {
+        const isDark = document.documentElement.classList.toggle('dark');
+        try {
+          localStorage.setItem('driveread_theme', isDark ? 'dark' : 'light');
+        } catch (e) {}
+      });
+
+      // Navigation back to Files library
+      const goToLibrary = () => {
+        state.view = 'library';
+        closeHighlightPopover();
+        hideSelectionToolbar();
+        hidePageScrubber();
+        document.getElementById('readerView').classList.add('hidden');
+        document.getElementById('readerToolbar').classList.add('hidden');
+        document.getElementById('libraryView').classList.remove('hidden');
+        renderLibrary();
+      };
+      document.getElementById('brandHomeBtn').addEventListener('click', goToLibrary);
+      document.getElementById('navLibraryBtn').addEventListener('click', goToLibrary);
+
+      // File upload inputs
+      async function handleFilesSelected(fileList) {
+        if (!fileList || fileList.length === 0) return;
+        showToast(`Processing ${fileList.length} file(s)...`);
+        let lastRec = null;
+        for (const file of Array.from(fileList)) {
+          lastRec = await ingestExternalFile(file);
+        }
+        renderLibrary();
+        if (lastRec) {
+          await openDocumentInReader(lastRec.id);
+          showToast(`Opened "${lastRec.name}"`);
+        }
+      }
+
+      document.getElementById('fileInputGlobal').addEventListener('change', (e) => {
+        handleFilesSelected(e.target.files);
+        e.target.value = '';
+      });
+      document.getElementById('fileInputDropzone').addEventListener('change', (e) => {
+        handleFilesSelected(e.target.files);
+        e.target.value = '';
+      });
+
+      // JSON Backup Export & Import listeners
+      document.getElementById('exportBackupBtn').addEventListener('click', exportLibraryBackupJson);
+      document.getElementById('importBackupInput').addEventListener('change', (e) => {
+        if (e.target.files && e.target.files[0]) {
+          importLibraryBackupJson(e.target.files[0]);
+          e.target.value = '';
+        }
+      });
+
+      // Drag and drop on dropzone and whole window
+      const dropZone = document.getElementById('dropZone');
+      ['dragenter', 'dragover'].forEach(evt => {
+        window.addEventListener(evt, (e) => {
+          e.preventDefault();
+          dropZone.classList.add('border-blue-500', 'bg-blue-50/30');
+        });
+      });
+      ['dragleave', 'drop'].forEach(evt => {
+        window.addEventListener(evt, (e) => {
+          e.preventDefault();
+          dropZone.classList.remove('border-blue-500', 'bg-blue-50/30');
+        });
+      });
+      window.addEventListener('drop', (e) => {
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          handleFilesSelected(e.dataTransfer.files);
+        }
+      });
+
+      // Library search & layout toggle
+      document.getElementById('librarySearchInput').addEventListener('input', (e) => {
+        state.searchQuery = e.target.value;
+        renderLibrary();
+      });
+      document.getElementById('gridViewBtn').addEventListener('click', () => {
+        state.libraryLayout = 'grid';
+        renderLibrary();
+      });
+      document.getElementById('listViewBtn').addEventListener('click', () => {
+        state.libraryLayout = 'list';
+        renderLibrary();
+      });
+
+      // Library item actions (Open, Rename, Delete)
+      document.getElementById('libraryItemsContainer').addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-action]');
+        if (!btn) return;
+        const action = btn.getAttribute('data-action');
+        const id = btn.getAttribute('data-id');
+        const file = state.files.find(f => f.id === id);
+        if (!file) return;
+
+        if (action === 'open') {
+          openDocumentInReader(id);
+        } else if (action === 'rename') {
+          openDialogModal({
+            title: 'Rename Document',
+            showInput: true,
+            initialValue: file.name,
+            confirmLabel: 'Rename',
+            onConfirm: async (newName) => {
+              if (newName) {
+                file.name = newName.endsWith('.pdf') ? newName : newName + '.pdf';
+                await saveFileRecord(file);
+                renderLibrary();
+                showToast('File renamed');
+              }
+            }
+          });
+        } else if (action === 'delete') {
+          openDialogModal({
+            title: 'Delete Document',
+            message: `Remove "${file.name}" and its highlights from your browser library?`,
+            showInput: false,
+            confirmLabel: 'Delete',
+            onConfirm: async () => {
+              await deleteFileRecord(id);
+              renderLibrary();
+              showToast('File removed from library');
+            }
+          });
+        }
+      });
+
+      document.getElementById('dialogCancelBtn').addEventListener('click', () => {
+        document.getElementById('dialogModal').classList.add('hidden');
+      });
+
+      // Reader controls: Page Jump & Zoom (persisted per file and session)
+      document.getElementById('prevPageBtn').addEventListener('click', () => jumpToPage(state.currentPage - 1));
+      document.getElementById('nextPageBtn').addEventListener('click', () => jumpToPage(state.currentPage + 1));
+      document.getElementById('pageJumpInput').addEventListener('change', (e) => {
+        jumpToPage(parseInt(e.target.value, 10) || 1);
+      });
+
+      document.getElementById('zoomInBtn').addEventListener('click', () => {
+        const nextZoom = getNextZoomStep(1);
+        applyZoomWithAnchor(nextZoom, false);
+      });
+      document.getElementById('zoomOutBtn').addEventListener('click', () => {
+        const prevZoom = getNextZoomStep(-1);
+        applyZoomWithAnchor(prevZoom, false);
+      });
+      document.getElementById('fitWidthBtn').addEventListener('click', () => {
+        applyZoomWithAnchor(state.zoom, true);
+      });
+
+      // App-level pinch-to-zoom (touch 2-finger pinch + trackpad ctrl+wheel) so only the PDF zooms
+      // and the custom slider / toolbars are never distorted by browser viewport scaling
+      let pinchStartDist = 0;
+      let pinchStartZoom = 1.0;
+      let pendingPinchZoom = null;
+      const pagesContainer = document.getElementById('pdfPagesContainer');
+
+      pagesContainer.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 2) {
+          e.preventDefault();
+          pinchStartDist = Math.hypot(
+            e.touches[0].clientX - e.touches[1].clientX,
+            e.touches[0].clientY - e.touches[1].clientY
+          );
+          pinchStartZoom = state.zoom;
+          pendingPinchZoom = state.zoom;
+          hideSelectionToolbar();
+        }
+      }, { passive: false });
+
+      pagesContainer.addEventListener('touchmove', (e) => {
+        if (e.touches.length === 2 && pinchStartDist > 0) {
+          e.preventDefault();
+          const dist = Math.hypot(
+            e.touches[0].clientX - e.touches[1].clientX,
+            e.touches[0].clientY - e.touches[1].clientY
+          );
+          const ratio = dist / pinchStartDist;
+          pendingPinchZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, +(pinchStartZoom * ratio).toFixed(3)));
+          document.getElementById('zoomLevelLabel').textContent = `${Math.round(pendingPinchZoom * 100)}%`;
+        }
+      }, { passive: false });
+
+      pagesContainer.addEventListener('touchend', () => {
+        if (pinchStartDist > 0) {
+          const finalZoom = pendingPinchZoom !== null ? pendingPinchZoom : state.zoom;
+          pinchStartDist = 0;
+          pendingPinchZoom = null;
+          if (Math.abs(finalZoom - state.zoom) > 0.01) {
+            applyZoomWithAnchor(finalZoom, false);
+          } else {
+            updateZoomControlsUI();
+          }
+          return;
+        }
+        setTimeout(evaluateCurrentSelection, 90);
+      });
+
+      // Desktop trackpad pinch / Ctrl+Wheel zoom inside reader
+      let wheelZoomTimer = null;
+      window.addEventListener('wheel', (e) => {
+        if (state.view !== 'reader' || (!e.ctrlKey && !e.metaKey)) return;
+        e.preventDefault();
+        const factor = e.deltaY < 0 ? 1.08 : 0.92;
+        state.fitWidth = false;
+        state.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, +(state.zoom * factor).toFixed(3)));
+        updateZoomControlsUI();
+        if (wheelZoomTimer) clearTimeout(wheelZoomTimer);
+        const capturedAnchor = captureReadingAnchor();
+        wheelZoomTimer = setTimeout(() => {
+          applyZoomWithAnchor(state.zoom, false);
+        }, 140);
+      }, { passive: false });
+
+      // Floating Selection Toolbar interactions (prevent mousedown/touchstart from collapsing selection)
+      const selectionToolbar = document.getElementById('selectionToolbar');
+      selectionToolbar.addEventListener('mousedown', (e) => e.preventDefault());
+      selectionToolbar.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+
+      document.getElementById('selectionColorDots').addEventListener('click', (e) => {
+        const dot = e.target.closest('[data-sel-color]');
+        if (!dot) return;
+        const colorKey = dot.getAttribute('data-sel-color');
+        commitPendingHighlight(colorKey);
+      });
+      document.getElementById('selectionHighlightBtn').addEventListener('click', () => {
+        commitPendingHighlight(state.activeColor);
+      });
+      document.getElementById('selectionCopyBtn').addEventListener('click', () => {
+        copyPendingSelectionText();
+      });
+
+      // Detect text selection on mouseup, keyup, and mobile selectionchange
+      let selectionDebounce = null;
+      document.addEventListener('mouseup', (e) => {
+        if (selectionToolbar.contains(e.target)) return;
+        setTimeout(evaluateCurrentSelection, 25);
+      });
+      document.addEventListener('selectionchange', () => {
+        if (state.view !== 'reader') return;
+        if (selectionDebounce) clearTimeout(selectionDebounce);
+        selectionDebounce = setTimeout(() => {
+          const sel = window.getSelection();
+          if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+            hideSelectionToolbar();
+          } else {
+            evaluateCurrentSelection();
+          }
+        }, 120);
+      });
+
+      // Top toolbar default color swatches
+      document.getElementById('colorPaletteContainer').addEventListener('click', (e) => {
+        const swatch = e.target.closest('[data-color]');
+        if (!swatch) return;
+        state.activeColor = swatch.getAttribute('data-color');
+        updateActiveSwatchRing(state.activeColor);
+        if (state.pendingSelection) {
+          commitPendingHighlight(state.activeColor);
+        }
+      });
+
+      // Highlight edit popover actions
+      document.getElementById('highlightPopover').addEventListener('click', (e) => {
+        const colorBtn = e.target.closest('[data-edit-color]');
+        if (colorBtn && state.selectedHighlightId) {
+          const newColor = colorBtn.getAttribute('data-edit-color');
+          const activeFile = getActiveFile();
+          if (activeFile && activeFile.highlights) {
+            const hl = activeFile.highlights.find(h => h.id === state.selectedHighlightId);
+            if (hl) {
+              hl.color = newColor;
+              saveFileRecord(activeFile);
+              renderPageHighlights(hl.pageNum);
+              showToast(`Changed highlight to ${HIGHLIGHT_COLORS[newColor].name}`);
+            }
+          }
+          closeHighlightPopover();
+        }
+      });
+
+      document.getElementById('deleteHighlightBtn').addEventListener('click', () => {
+        if (!state.selectedHighlightId) return;
+        const activeFile = getActiveFile();
+        if (activeFile && activeFile.highlights) {
+          const target = activeFile.highlights.find(h => h.id === state.selectedHighlightId);
+          activeFile.highlights = activeFile.highlights.filter(h => h.id !== state.selectedHighlightId);
+          saveFileRecord(activeFile);
+          if (target) renderPageHighlights(target.pageNum);
+          updateHighlightCountBadge();
+          showToast('Highlight removed');
+        }
+        closeHighlightPopover();
+      });
+
+      document.getElementById('closePopoverBtn').addEventListener('click', closeHighlightPopover);
+
+      // Highlights List Modal
+      document.getElementById('viewHighlightsListBtn').addEventListener('click', () => {
+        renderHighlightsModalList();
+        document.getElementById('highlightsModal').classList.remove('hidden');
+      });
+      const closeHlModal = () => document.getElementById('highlightsModal').classList.add('hidden');
+      document.getElementById('closeHighlightsModalBtn').addEventListener('click', closeHlModal);
+      document.getElementById('doneHighlightsModalBtn').addEventListener('click', closeHlModal);
+
+      document.getElementById('highlightsListContainer').addEventListener('click', (e) => {
+        const rmBtn = e.target.closest('[data-remove-hl]');
+        if (rmBtn) {
+          const hlId = rmBtn.getAttribute('data-remove-hl');
+          const activeFile = getActiveFile();
+          if (activeFile && activeFile.highlights) {
+            const target = activeFile.highlights.find(h => h.id === hlId);
+            activeFile.highlights = activeFile.highlights.filter(h => h.id !== hlId);
+            saveFileRecord(activeFile);
+            if (target) renderPageHighlights(target.pageNum);
+            updateHighlightCountBadge();
+            renderHighlightsModalList();
+          }
+          return;
+        }
+        const jumpItem = e.target.closest('[data-jump-page]');
+        if (jumpItem) {
+          const p = parseInt(jumpItem.getAttribute('data-jump-page'), 10);
+          closeHlModal();
+          jumpToPage(p);
+        }
+      });
+
+      document.getElementById('clearAllHighlightsBtn').addEventListener('click', () => {
+        const activeFile = getActiveFile();
+        if (!activeFile) return;
+        activeFile.highlights = [];
+        saveFileRecord(activeFile);
+        for (let p = 1; p <= state.totalPages; p++) renderPageHighlights(p);
+        updateHighlightCountBadge();
+        renderHighlightsModalList();
+        showToast('Cleared all highlights');
+      });
+
+      // In-Document Search listeners (Case-insensitive, word-only, Enter / Shift+Enter, Clear)
+      const searchInput = document.getElementById('docSearchInput');
+      searchInput.addEventListener('input', (e) => {
+        runInDocumentSearch(e.target.value.trim());
+      });
+      searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (e.shiftKey) {
+            stepSearchMatch(-1);
+          } else {
+            stepSearchMatch(1);
+          }
+        }
+      });
+      document.getElementById('docSearchClearBtn').addEventListener('click', () => {
+        searchInput.value = '';
+        runInDocumentSearch('');
+      });
+      document.getElementById('docSearchPrevBtn').addEventListener('click', () => stepSearchMatch(-1));
+      document.getElementById('docSearchNextBtn').addEventListener('click', () => stepSearchMatch(1));
+
+      // Export & Print Modal listeners
+      document.getElementById('openExportModalBtn').addEventListener('click', async () => {
+        document.getElementById('exportModal').classList.remove('hidden');
+        await refreshExportModalPreview();
+      });
+      document.getElementById('closeExportModalBtn').addEventListener('click', () => {
+        document.getElementById('exportModal').classList.add('hidden');
+      });
+      document.querySelectorAll('input[name="exportMode"]').forEach(radio => {
+        radio.addEventListener('change', () => refreshExportModalPreview());
+      });
+      document.getElementById('shieldedDownloadLink').addEventListener('click', (e) => {
+        if (e.currentTarget.getAttribute('data-disabled') === 'true') {
+          e.preventDefault();
+          showToast('No highlights to export — add highlights first.');
+          return;
+        }
+        showToast('Download triggered! In preview frames, you can also use Print / Save as PDF or the inline viewer.');
+      });
+      document.getElementById('triggerPrintBtn').addEventListener('click', () => {
+        executePrintForCurrentMode();
+      });
+
+      // Overlaid Right-Side Page Slider (Scrubber) listeners (Mouse, Touch, Scroll, Auto-Hide)
+      const scrubberHitArea = document.getElementById('pageScrubberHitArea');
+      const scrubberBubble = document.getElementById('pageScrubberBubble');
+
+      // Show slider when clicking/tapping on the reader page area, auto-hide after 3s
+      document.getElementById('readerView').addEventListener('click', (e) => {
+        if (e.target.closest('#highlightPopover') || e.target.closest('#selectionToolbar')) return;
+        showPageScrubberTemporarily();
+      });
+      document.getElementById('readerView').addEventListener('touchstart', (e) => {
+        if (e.target.closest('#highlightPopover') || e.target.closest('#selectionToolbar')) return;
+        showPageScrubberTemporarily();
+      }, { passive: true });
+
+      window.addEventListener('scroll', () => {
+        if (state.view === 'reader' && !state.scrubberDragging) {
+          updateScrubberFromScroll();
+        }
+      }, { passive: true });
+
+      let resizeTimer = null;
+      window.addEventListener('resize', () => {
+        if (state.view === 'reader') {
+          updateScrubberFromScroll();
+          if (state.fitWidth) {
+            if (resizeTimer) clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => {
+              applyZoomWithAnchor(state.zoom, true);
+            }, 180);
+          }
+        }
+      }, { passive: true });
+
+      function startScrubberDrag(clientY) {
+        state.scrubberDragging = true;
+        if (state.scrubberHideTimer) {
+          clearTimeout(state.scrubberHideTimer);
+          state.scrubberHideTimer = null;
+        }
+        scrubberHitArea.classList.remove('opacity-0', 'pointer-events-none');
+        scrubberHitArea.classList.add('opacity-100', 'pointer-events-auto');
+        scrubberBubble.classList.remove('hidden');
+        handleScrubberPointerMove(clientY);
+      }
+
+      function endScrubberDrag() {
+        if (!state.scrubberDragging) return;
+        state.scrubberDragging = false;
+        scrubberBubble.classList.add('hidden');
+        showPageScrubberTemporarily();
+      }
+
+      scrubberHitArea.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        startScrubberDrag(e.clientY);
+      });
+      window.addEventListener('mousemove', (e) => {
+        if (!state.scrubberDragging) return;
+        e.preventDefault();
+        handleScrubberPointerMove(e.clientY);
+      });
+      window.addEventListener('mouseup', () => {
+        if (state.scrubberDragging) endScrubberDrag();
+      });
+
+      scrubberHitArea.addEventListener('touchstart', (e) => {
+        if (e.touches.length !== 1) return;
+        e.stopPropagation();
+        startScrubberDrag(e.touches[0].clientY);
+      }, { passive: true });
+      scrubberHitArea.addEventListener('touchmove', (e) => {
+        if (!state.scrubberDragging || e.touches.length !== 1) return;
+        e.preventDefault();
+        e.stopPropagation();
+        handleScrubberPointerMove(e.touches[0].clientY);
+      }, { passive: false });
+      window.addEventListener('touchend', () => {
+        if (state.scrubberDragging) endScrubberDrag();
+      });
+      window.addEventListener('touchcancel', () => {
+        if (state.scrubberDragging) endScrubberDrag();
+      });
+
+      // Load saved library (starts empty if no user files; auto-reopens last opened file at last page & zoom)
+      await loadAllFileRecords();
+      renderLibrary();
+
+      const session = getSessionState();
+      if (session.lastOpenedFileId) {
+        const targetFile = state.files.find(f => f.id === session.lastOpenedFileId);
+        if (targetFile && targetFile.pdfBytes) {
+          if (session.lastPage) targetFile.lastPage = session.lastPage;
+          if (session.zoom) targetFile.zoom = session.zoom;
+          if (typeof session.fitWidth === 'boolean') targetFile.fitWidth = session.fitWidth;
+          await openDocumentInReader(targetFile.id);
+        }
+      }
+    });
+  </script>
+</body>
+</html>
